@@ -341,76 +341,114 @@ def _datex_record_id(record):
 
 def parse_datex_xml(xml_text, source_url):
     """
-    Devuelve SOLO registros DATEX que cumplen:
+    Extrae los cortes INFOCAR/DGT y conserva el identificador de la
+    ``situation`` DATEX a la que pertenece cada registro.
 
-        forestFire / seriousFire
-        +
-        roadClosed
-        -
-        rerouting/diversion
+    Esto es importante porque una misma emergencia puede contener varios
+    ``situationRecord`` (A-493, HU-3106, HU-4103, etc.). Si uno de ellos
+    puede vincularse al incendio INFOCA, debemos poder recuperar los demás
+    registros de ESA MISMA situation, aunque sus localidades sean distintas.
 
-    INFOCAR crea el corte. No se utilizan noticias para crear
-    un corte de carretera.
+    INFOCAR sigue siendo la autoridad para declarar que existe un corte.
+    INFOCA/Junta se utiliza para identificar el incendio al que pertenece.
     """
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:
         return []
 
-    records = [
+    # DATEX II normalmente organiza los situationRecord dentro de
+    # <situation>. Conservamos esa relación en lugar de aplanarla.
+    situations = [
         element
         for element in root.iter()
-        if element.tag.rsplit("}", 1)[-1].lower()
-        == "situationrecord"
+        if element.tag.rsplit("}", 1)[-1].lower() == "situation"
     ]
+
+    # Fallback por si una publicación concreta no utiliza el contenedor
+    # situation de la forma esperada.
+    if not situations:
+        situations = [root]
 
     results = []
     seen = set()
 
-    for record in records:
-        if not _record_is_fire(record):
-            continue
+    for situation_index, situation in enumerate(situations):
+        # IMPORTANTE: _tag_text() recorre descendientes y podría devolver el
+        # id de un situationRecord hijo. Para identificar la situation hay
+        # que mirar primero sus atributos y sus hijos directos.
+        situation_id = ""
 
-        if not _record_is_road_closed(record):
-            continue
+        for key, value in situation.attrib.items():
+            local = key.rsplit("}", 1)[-1].lower()
+            if local in ("id", "situationid", "situationnumber"):
+                if normalize(value):
+                    situation_id = normalize(value)
+                    break
 
-        if _record_is_rerouting(record):
-            continue
+        if not situation_id:
+            for child in list(situation):
+                local = child.tag.rsplit("}", 1)[-1].lower()
+                if local in ("id", "situationid", "situationnumber"):
+                    value = normalize(child.text)
+                    if value:
+                        situation_id = value
+                        break
 
-        road = _datex_road(record)
+        if not situation_id:
+            situation_id = f"container-{situation_index}"
 
-        if not road:
-            continue
+        records = [
+            element
+            for element in situation.iter()
+            if element.tag.rsplit("}", 1)[-1].lower()
+            == "situationrecord"
+        ]
 
-        km = _datex_km(record)
-        direction = _datex_direction(record)
-        location_text = _datex_location_text(record)
-        lat, lon = _datex_coordinates(record)
-        record_id = _datex_record_id(record)
+        for record in records:
+            if not _record_is_fire(record):
+                continue
 
-        key = (
-            record_id
-            or f"{road}|{km}|{lat}|{lon}|{direction}"
-        )
+            if not _record_is_road_closed(record):
+                continue
 
-        if key in seen:
-            continue
+            if _record_is_rerouting(record):
+                continue
 
-        seen.add(key)
+            road = _datex_road(record)
+            if not road:
+                continue
 
-        results.append(
-            {
-                "road": road,
-                "section": km or "",
-                "direction": direction or "",
-                "location_text": location_text,
-                "lat": lat,
-                "lon": lon,
-                "datex_id": record_id,
-                "dgt_source": source_url,
-                "detected_at": display_datetime(),
-            }
-        )
+            km = _datex_km(record)
+            direction = _datex_direction(record)
+            location_text = _datex_location_text(record)
+            lat, lon = _datex_coordinates(record)
+            record_id = _datex_record_id(record)
+
+            key = (
+                record_id
+                or f"{road}|{km}|{lat}|{lon}|{direction}|{situation_id}"
+            )
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            results.append(
+                {
+                    "road": road,
+                    "section": km or "",
+                    "direction": direction or "",
+                    "location_text": location_text,
+                    "lat": lat,
+                    "lon": lon,
+                    "datex_id": record_id,
+                    "situation_id": situation_id,
+                    "dgt_source": source_url,
+                    "detected_at": display_datetime(),
+                }
+            )
 
     return results
 
@@ -442,6 +480,7 @@ def fetch_datex_closures():
                     item.get("lat"),
                     item.get("lon"),
                     item.get("direction"),
+                    item.get("situation_id"),
                 )
             )
 
@@ -857,57 +896,72 @@ def _road_belongs_to_province(road, province):
     )
 
 
-def _dgt_matches_fire(dgt_item, fire):
+def _dgt_matches_fire(dgt_item, fire, dgt_items=None):
     """
-    INFOCAR aporta el corte.
-    INFOCA aporta el incendio al que pertenece.
+    Vincula un corte INFOCAR con un incendio INFOCA.
 
-    La carretera mencionada en INFOCA se utiliza SOLO para
-    asociar el corte, nunca para crear uno.
+    Hay dos niveles de asociación:
+
+    1. Asociación directa: carretera o municipio coinciden con INFOCA.
+    2. Asociación por ``situation_id`` DATEX: si un registro de una misma
+       situation ya ha quedado vinculado al incendio, todos los demás
+       cortes forest-fire + road-closed de esa misma situation se consideran
+       parte de la misma incidencia DGT y se incorporan al aviso.
+
+    Esto evita perder carreteras cuando INFOCAR las publica en localidades
+    diferentes (por ejemplo, Niebla, Valverde del Camino o La Palma del
+    Condado) pero dentro de la misma emergencia de incendio.
     """
-    road = normalize_road(
-        dgt_item.get("road", "")
-    )
+    road = normalize_road(dgt_item.get("road", ""))
+    province = fire.get("province", "No disponible")
 
-    province = fire.get(
-        "province",
-        "No disponible",
-    )
-
-    if not _road_belongs_to_province(
-        road,
-        province,
-    ):
+    if not _road_belongs_to_province(road, province):
         return False
 
-    if road in {
+    fire_roads = {
         normalize_road(value)
         for value in fire.get("roads", [])
-    }:
+        if normalize_road(value)
+    }
+
+    if road in fire_roads:
         return True
 
-    location = normalize(
-        dgt_item.get(
-            "location_text",
-            "",
-        )
-    ).lower()
+    location = normalize(dgt_item.get("location_text", "")).lower()
+    municipality = normalize(fire.get("municipality", "")).lower()
 
-    municipality = normalize(
-        fire.get(
-            "municipality",
-            "",
-        )
-    ).lower()
-
-    # Si INFOCAR proporciona el municipio y coincide
-    # con el incendio de INFOCA, es una asociación válida.
     if (
         municipality
         and municipality != "no disponible"
         and municipality in location
     ):
         return True
+
+    # Si este registro pertenece a una situation que ya contiene otro
+    # registro directamente asociado al incendio, heredamos la asociación.
+    situation_id = normalize(dgt_item.get("situation_id", ""))
+    if situation_id and dgt_items:
+        for other in dgt_items:
+            if other is dgt_item:
+                continue
+
+            if normalize(other.get("situation_id", "")) != situation_id:
+                continue
+
+            other_road = normalize_road(other.get("road", ""))
+            if other_road in fire_roads:
+                return True
+
+            other_location = normalize(
+                other.get("location_text", "")
+            ).lower()
+
+            if (
+                municipality
+                and municipality != "no disponible"
+                and municipality in other_location
+            ):
+                return True
 
     return False
 
@@ -1033,6 +1087,11 @@ def _merge_dgt_into_fire(fire, dgt_items):
             for item in dgt_items
             if item.get("datex_id")
         ],
+        "situation_ids": sorted({
+            item.get("situation_id", "")
+            for item in dgt_items
+            if item.get("situation_id")
+        }),
     }
 
 
@@ -1071,6 +1130,7 @@ def fetch_official_incidents():
             if _dgt_matches_fire(
                 item,
                 fire,
+                dgt_items,
             )
         ]
 
