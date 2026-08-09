@@ -747,16 +747,88 @@ def parse_infoca_article(article):
     }
 
 
+def _fire_group_key(item):
+    """Agrupa actualizaciones del mismo incendio sin perder carreteras."""
+    province = normalize(item.get("province", "")).lower()
+    municipality = normalize(item.get("municipality", "")).lower()
+
+    if municipality and municipality != "no disponible":
+        return f"{province}|{municipality}"
+
+    fire = normalize(item.get("fire", "")).lower()
+    return f"{province}|{fire}"
+
+
+def _merge_infoca_fire_updates(items):
+    """Fusiona artículos del mismo incendio y conserva todas sus carreteras."""
+    if not items:
+        return None
+
+    base = sorted(
+        items,
+        key=lambda x: (
+            x.get("municipality") == "No disponible",
+            x.get("fire") == "Incendio forestal",
+        ),
+    )[0]
+
+    roads = []
+    sources = []
+    province = base.get("province", "No disponible")
+    municipality = base.get("municipality", "No disponible")
+    fire_name = base.get("fire", "Incendio forestal")
+
+    for item in items:
+        if province == "No disponible" and item.get("province") != "No disponible":
+            province = item.get("province")
+        if municipality == "No disponible" and item.get("municipality") != "No disponible":
+            municipality = item.get("municipality")
+        if fire_name == "Incendio forestal" and item.get("fire"):
+            fire_name = item.get("fire")
+
+        for road in item.get("roads", []):
+            road = normalize_road(road)
+            if road and road not in roads:
+                roads.append(road)
+
+        source = item.get("source_url", "")
+        if source and source not in sources:
+            sources.append(source)
+
+    return {
+        **base,
+        "fire": fire_name,
+        "province": province,
+        "municipality": municipality,
+        "roads": roads,
+        "source_urls": sources,
+        "source_url": sources[0] if sources else base.get("source_url", ""),
+    }
+
+
 def fetch_infoca_fires():
-    fires = []
+    """
+    Consulta las publicaciones INFOCA/Junta y fusiona las actualizaciones
+    que corresponden al mismo incendio. Una actualización posterior que
+    mencione solo una carretera no hace desaparecer las anteriores.
+    """
+    parsed = []
 
     for article in get_candidate_articles():
         item = parse_infoca_article(article)
+        if item:
+            parsed.append(item)
 
-        if not item:
-            continue
+    groups = {}
+    for item in parsed:
+        key = _fire_group_key(item)
+        groups.setdefault(key, []).append(item)
 
-        fires.append(item)
+    fires = []
+    for items in groups.values():
+        merged = _merge_infoca_fire_updates(items)
+        if merged:
+            fires.append(merged)
 
     return fires
 
@@ -944,9 +1016,9 @@ def _merge_dgt_into_fire(fire, dgt_items):
             "Corte confirmado por "
             "INFOCAR/DGT"
         ),
-        "other_sources": fire.get(
-            "source_url",
-            "",
+        "other_sources": " | ".join(
+            fire.get("source_urls", [])
+            or [fire.get("source_url", "")]
         ),
         "source_url": fire.get(
             "source_url",
