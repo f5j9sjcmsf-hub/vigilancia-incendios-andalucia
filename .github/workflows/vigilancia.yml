@@ -1,0 +1,48 @@
+name: Vigilancia Andalucía
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "7 9-22 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  vigilancia:
+    runs-on: ubuntu-latest
+
+    env:
+      TZ: Europe/Madrid
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Ejecutar vigilancia
+        working-directory: src
+        run: python main.py
+
+      - name: Guardar estado
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add data/state.json
+
+          git diff --cached --quiet || git commit -m "Actualizar estado de vigilancia"
+
+          git push
