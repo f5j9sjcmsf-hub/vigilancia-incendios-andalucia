@@ -151,14 +151,23 @@ def split_sentences(text):
 
 
 def find_province(text):
-    text_lower = text.lower()
+    """
+    Detecta la provincia de forma contextual.
 
-    for province in ANDALUSIA_PROVINCES:
-        if province.lower() in text_lower:
-            return province
+    No devuelve simplemente la primera provincia que aparece en una noticia,
+    porque un artículo puede mencionar otras provincias sin que el incendio
+    esté allí.
+    """
+
+    if not text:
+        return "No disponible"
+
+    text_normalized = normalize(text)
+    lower = text_normalized.lower()
 
     aliases = {
         "almeria": "Almería",
+        "almería": "Almería",
         "cádiz": "Cádiz",
         "cadiz": "Cádiz",
         "córdoba": "Córdoba",
@@ -172,9 +181,49 @@ def find_province(text):
         "sevilla": "Sevilla",
     }
 
+    # 1. Contexto explícito.
+    patterns = [
+        r"provincia\s+(?:de|del)\s+(almer[ií]a|c[aá]diz|c[oó]rdoba|granada|huelva|ja[eé]n|m[aá]laga|sevilla)",
+        r"en\s+(almer[ií]a|c[aá]diz|c[oó]rdoba|granada|huelva|ja[eé]n|m[aá]laga|sevilla)",
+        r"\((almer[ií]a|c[aá]diz|c[oó]rdoba|granada|huelva|ja[eé]n|m[aá]laga|sevilla)\)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, lower, re.IGNORECASE)
+        if match:
+            return aliases[match.group(1).lower()]
+
+    # 2. Prefijo provincial inequívoco de carretera.
+    road_province = {
+        "AL": "Almería",
+        "CA": "Cádiz",
+        "CO": "Córdoba",
+        "GR": "Granada",
+        "H": "Huelva",
+        "HU": "Huelva",
+        "J": "Jaén",
+        "JA": "Jaén",
+        "MA": "Málaga",
+        "SE": "Sevilla",
+    }
+
+    for match in re.finditer(
+        r"\b(AL|CA|CO|GR|H|HU|J|JA|MA|SE)-\s*\d{1,5}\b",
+        text_normalized,
+        re.IGNORECASE,
+    ):
+        prefix = match.group(1).upper()
+        return road_province[prefix]
+
+    # 3. Solo si aparece una única provincia en todo el texto.
+    found = []
     for alias, province in aliases.items():
-        if alias in text_lower:
-            return province
+        if re.search(rf"\b{re.escape(alias)}\b", lower):
+            if province not in found:
+                found.append(province)
+
+    if len(found) == 1:
+        return found[0]
 
     return "No disponible"
 
@@ -626,6 +675,47 @@ def parse_article(article):
     closure_roads = extract_roads_near_closure(
         full_text
     )
+
+    # Filtrar carreteras provinciales inequívocas que pertenezcan a otra
+    # provincia. Evita contaminar una incidencia cuando una noticia menciona
+    # varias provincias.
+    road_province = {
+        "AL": "Almería",
+        "CA": "Cádiz",
+        "CO": "Córdoba",
+        "GR": "Granada",
+        "H": "Huelva",
+        "HU": "Huelva",
+        "J": "Jaén",
+        "JA": "Jaén",
+        "MA": "Málaga",
+        "SE": "Sevilla",
+    }
+
+    filtered_roads = []
+
+    for road in closure_roads:
+        match = re.match(
+            r"^([A-Z]+)-\d{1,5}$",
+            road,
+            re.IGNORECASE,
+        )
+
+        if not match:
+            filtered_roads.append(road)
+            continue
+
+        prefix = match.group(1).upper()
+        expected_province = road_province.get(prefix)
+
+        if (
+            expected_province is None
+            or province == "No disponible"
+            or expected_province == province
+        ):
+            filtered_roads.append(road)
+
+    closure_roads = filtered_roads
 
     has_closure = contains_any(
         full_text,
