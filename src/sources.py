@@ -1041,14 +1041,72 @@ def fetch_official_incidents():
     return incidents
 
 
+def _road_is_active_in_infocar(road, active_dgt):
+    """True si INFOCAR sigue mostrando esa carretera como cortada."""
+    target = normalize_road(road)
+    if not target:
+        return False
+
+    return any(
+        normalize_road(item.get("road", "")) == target
+        for item in active_dgt
+    )
+
+
+def _explicit_reopening_for_road(text, road):
+    """
+    Comprueba que la reapertura se refiere realmente a la carretera.
+
+    No basta con que una noticia contenga la palabra 'reabierta' en
+    cualquier parte del texto: debe existir una expresión inequívoca
+    de reapertura cerca del nombre de la carretera.
+    """
+    text = normalize(text)
+    road = normalize_road(road)
+
+    if not text or not road:
+        return False
+
+    reopening_pattern = re.compile(
+        r"(?:reabiert[oa]|reapertura|abiert[oa]\s+al\s+tr[aá]fico|"
+        r"restablecid[oa]\s+(?:la\s+)?(?:circulaci[oó]n|tr[aá]fico)|"
+        r"vuelve\s+a\s+abrir|queda\s+abiert[oa]|se\s+abre\s+de\s+nuevo)",
+        re.IGNORECASE,
+    )
+
+    road_pattern = re.escape(road).replace(r"\-", r"[- ]?")
+
+    # Buscamos en una ventana alrededor de cada aparición de la carretera.
+    for match in re.finditer(road_pattern, text, re.IGNORECASE):
+        window = text[max(0, match.start() - 350):match.end() + 350]
+        if reopening_pattern.search(window):
+            return True
+
+    return False
+
+
 def fetch_official_reopenings():
     """
-    Las desapariciones de INFOCAR NO se consideran reaperturas.
+    Detecta reaperturas oficiales con una política conservadora.
 
-    Solo se devuelven reaperturas expresamente comunicadas por
-    una fuente oficial de la Junta/INFOCA.
+    REGLAS:
+      1. La Junta/INFOCA debe comunicar expresamente la reapertura.
+      2. La expresión de reapertura debe estar vinculada a la carretera.
+      3. Si INFOCAR/DGT todavía muestra esa carretera como cortada,
+         NO se genera ninguna reapertura.
+
+    Una noticia de seguimiento del incendio nunca puede provocar por sí
+    sola una reapertura.
     """
     reopenings = []
+
+    # Fuente de verdad para el estado actual de la carretera.
+    active_dgt = fetch_datex_closures()
+    active_roads = {
+        normalize_road(item.get("road", ""))
+        for item in active_dgt
+        if normalize_road(item.get("road", ""))
+    }
 
     for article in get_candidate_articles():
         try:
@@ -1076,21 +1134,42 @@ def fetch_official_reopenings():
 
         full_text = f"{title} {body}"
 
-        if not contains_any(
-            full_text,
-            FIRE_KEYWORDS,
-        ):
+        if not contains_any(full_text, FIRE_KEYWORDS):
             continue
 
-        if not contains_any(
-            full_text,
-            REOPEN_KEYWORDS,
-        ):
+        # Primero extraemos carreteras. Una noticia sin carretera concreta
+        # no puede generar una reapertura.
+        roads = extract_roads(full_text)
+        if not roads:
             continue
 
-        province = find_province(
-            full_text
-        )
+        # Cada carretera debe tener una mención inequívoca de reapertura.
+        explicit_roads = [
+            road
+            for road in roads
+            if _explicit_reopening_for_road(
+                full_text,
+                road,
+            )
+        ]
+
+        if not explicit_roads:
+            continue
+
+        # CRÍTICO: si INFOCAR todavía marca la carretera como cortada,
+        # la Junta no puede provocar una reapertura en nuestro sistema.
+        # Esto evita exactamente los falsos positivos de artículos de
+        # seguimiento del incendio.
+        valid_roads = [
+            road
+            for road in explicit_roads
+            if normalize_road(road) not in active_roads
+        ]
+
+        if not valid_roads:
+            continue
+
+        province = find_province(full_text)
 
         municipality = extract_municipality(
             title,
@@ -1102,19 +1181,12 @@ def fetch_official_reopenings():
             municipality,
         )
 
-        roads = extract_roads(
-            full_text
-        )
-
-        if not roads:
-            continue
-
         reopenings.append(
             {
                 "fire": fire_name,
                 "province": province,
                 "municipality": municipality,
-                "road": ", ".join(roads),
+                "road": ", ".join(valid_roads),
                 "section": "",
                 "reopened_at": display_datetime(),
                 "source": article["url"],
@@ -1128,18 +1200,10 @@ def fetch_official_reopenings():
     for item in reopenings:
         key = "|".join(
             (
-                normalize(
-                    item.get("fire", "")
-                ).lower(),
-                normalize(
-                    item.get("province", "")
-                ).lower(),
-                normalize(
-                    item.get("municipality", "")
-                ).lower(),
-                normalize(
-                    item.get("road", "")
-                ).lower(),
+                normalize(item.get("fire", "")).lower(),
+                normalize(item.get("province", "")).lower(),
+                normalize(item.get("municipality", "")).lower(),
+                normalize(item.get("road", "")).lower(),
             )
         )
 
