@@ -28,7 +28,7 @@ DGT_URLS = (
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 "
-        "(compatible; VigilanciaIncendiosAndalucia/2.0)"
+        "(compatible; VigilanciaIncendiosAndalucia/3.0)"
     )
 }
 
@@ -224,37 +224,72 @@ def _datex_road(record):
     )
 
 
-def _datex_km(record):
-    """
-    SOLO acepta un PK explícito.
-
-    Nunca usa 'from' o 'to' como PK porque en DATEX esos campos
-    pueden contener descripciones completas de localización,
-    coordenadas, municipio, etc.
-    """
-    value = _tag_text(
-        record,
-        (
-            "kilometerPoint",
-            "kilometrePoint",
-            "kilometricPoint",
-            "pk",
-        ),
-    )
-
+def _clean_km(value):
+    """Extrae un PK solo cuando el texto parece realmente kilométrico."""
+    value = normalize(value)
     if not value:
         return ""
 
-    match = re.search(
-        r"(?<!\d)(\d+(?:[.,]\d+)?)(?!\d)",
-        value,
-    )
+    # Evita coordenadas, nombres de municipios y descripciones de localización.
+    if not re.search(r"\b(?:pk|p\.k\.|km|kil[oó]metro|kil[oó]metros?)\b", value, re.IGNORECASE):
+        # Un valor puramente numérico puede ser un PK DATEX válido.
+        if not re.fullmatch(r"\d+(?:[.,]\d+)?", value):
+            return ""
 
+    match = re.search(r"(?<!\d)(\d+(?:[.,]\d+)?)(?!\d)", value)
     if not match:
         return ""
 
-    return f"PK {match.group(1).replace(',', '.')}"
+    return match.group(1).replace(",", ".")
 
+
+def _datex_km_range(record):
+    """Devuelve (desde, hasta) sin usar descripciones de localización como PK."""
+    point = _tag_text(record, (
+        "kilometerPoint", "kilometrePoint", "kilometricPoint", "pk"
+    ))
+    if point:
+        value = _clean_km(point)
+        if value:
+            return value, ""
+
+    from_km = _tag_text(record, (
+        "fromKilometerPoint", "fromKilometrePoint", "fromKilometricPoint",
+        "startKilometerPoint", "startKilometrePoint", "startKm", "fromPk",
+    ))
+    to_km = _tag_text(record, (
+        "toKilometerPoint", "toKilometrePoint", "toKilometricPoint",
+        "endKilometerPoint", "endKilometrePoint", "endKm", "toPk",
+    ))
+
+    # Algunos DATEX usan from/to, pero solo los aceptamos si contienen
+    # explícitamente PK/km o son números puros.
+    if not from_km:
+        raw = _tag_text(record, ("from",))
+        if re.fullmatch(r"\s*(?:PK\s*)?\d+(?:[.,]\d+)?\s*", raw, re.IGNORECASE):
+            from_km = raw
+
+    if not to_km:
+        raw = _tag_text(record, ("to",))
+        if re.fullmatch(r"\s*(?:PK\s*)?\d+(?:[.,]\d+)?\s*", raw, re.IGNORECASE):
+            to_km = raw
+
+    return _clean_km(from_km), _clean_km(to_km)
+
+
+def _format_km_range(record):
+    start_km, end_km = _datex_km_range(record)
+    if start_km and end_km and start_km != end_km:
+        return f"PK {start_km}–{end_km}"
+    if start_km:
+        return f"PK {start_km}"
+    if end_km:
+        return f"PK {end_km}"
+    return ""
+
+
+def _datex_km(record):
+    return _format_km_range(record)
 
 def _datex_direction(record):
     return _tag_text(
@@ -896,22 +931,26 @@ def _road_belongs_to_province(road, province):
     )
 
 
-def _dgt_matches_fire(dgt_item, fire, dgt_items=None):
-    """
-    Vincula un corte INFOCAR con un incendio INFOCA.
+def _haversine_km(lat1, lon1, lat2, lon2):
+    """Distancia aproximada entre dos coordenadas en kilómetros."""
+    if None in (lat1, lon1, lat2, lon2):
+        return None
 
-    Hay dos niveles de asociación:
+    from math import radians, sin, cos, asin, sqrt
 
-    1. Asociación directa: carretera o municipio coinciden con INFOCA.
-    2. Asociación por ``situation_id`` DATEX: si un registro de una misma
-       situation ya ha quedado vinculado al incendio, todos los demás
-       cortes forest-fire + road-closed de esa misma situation se consideran
-       parte de la misma incidencia DGT y se incorporan al aviso.
+    r = 6371.0088
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = (
+        sin(dlat / 2) ** 2
+        + cos(radians(lat1))
+        * cos(radians(lat2))
+        * sin(dlon / 2) ** 2
+    )
+    return 2 * r * asin(sqrt(a))
 
-    Esto evita perder carreteras cuando INFOCAR las publica en localidades
-    diferentes (por ejemplo, Niebla, Valverde del Camino o La Palma del
-    Condado) pero dentro de la misma emergencia de incendio.
-    """
+
+def _direct_dgt_matches_fire(dgt_item, fire):
     road = normalize_road(dgt_item.get("road", ""))
     province = fire.get("province", "No disponible")
 
@@ -930,41 +969,84 @@ def _dgt_matches_fire(dgt_item, fire, dgt_items=None):
     location = normalize(dgt_item.get("location_text", "")).lower()
     municipality = normalize(fire.get("municipality", "")).lower()
 
-    if (
+    return bool(
         municipality
         and municipality != "no disponible"
         and municipality in location
-    ):
+    )
+
+
+def _expand_fire_dgt_cluster(fire, direct_matches, dgt_items):
+    """
+    Amplía la relación a otros cortes INFOCAR activos del mismo incendio.
+
+    Se hace de forma conservadora: mismo territorio provincial y proximidad
+    geográfica a un corte ya asociado. No basta con que sean carreteras de la
+    misma provincia.
+    """
+    if not direct_matches:
+        return []
+
+    selected = list(direct_matches)
+    selected_keys = {
+        item.get("datex_id") or id(item)
+        for item in selected
+    }
+
+    # 35 km permite cubrir el entorno de Niebla/Valverde sin convertir toda
+    # Huelva en un único incendio. La asociación siempre parte de un corte
+    # ya vinculado directamente a INFOCA.
+    radius_km = 35.0
+
+    changed = True
+    while changed:
+        changed = False
+
+        for candidate in dgt_items:
+            candidate_key = candidate.get("datex_id") or id(candidate)
+            if candidate_key in selected_keys:
+                continue
+
+            if not _road_belongs_to_province(
+                candidate.get("road", ""),
+                fire.get("province", "No disponible"),
+            ):
+                continue
+
+            for anchor in selected:
+                distance = _haversine_km(
+                    candidate.get("lat"),
+                    candidate.get("lon"),
+                    anchor.get("lat"),
+                    anchor.get("lon"),
+                )
+
+                if distance is not None and distance <= radius_km:
+                    selected.append(candidate)
+                    selected_keys.add(candidate_key)
+                    changed = True
+                    break
+
+    return selected
+
+
+def _dgt_matches_fire(dgt_item, fire, dgt_items=None):
+    """Asociación directa entre un corte INFOCAR y un incendio INFOCA."""
+    if _direct_dgt_matches_fire(dgt_item, fire):
         return True
 
-    # Si este registro pertenece a una situation que ya contiene otro
-    # registro directamente asociado al incendio, heredamos la asociación.
+    # Mantener la asociación por situation DATEX cuando ya existe un ancla.
     situation_id = normalize(dgt_item.get("situation_id", ""))
     if situation_id and dgt_items:
         for other in dgt_items:
             if other is dgt_item:
                 continue
-
             if normalize(other.get("situation_id", "")) != situation_id:
                 continue
-
-            other_road = normalize_road(other.get("road", ""))
-            if other_road in fire_roads:
-                return True
-
-            other_location = normalize(
-                other.get("location_text", "")
-            ).lower()
-
-            if (
-                municipality
-                and municipality != "no disponible"
-                and municipality in other_location
-            ):
+            if _direct_dgt_matches_fire(other, fire):
                 return True
 
     return False
-
 
 def _group_key(fire):
     return (
@@ -983,105 +1065,68 @@ def _group_key(fire):
 
 
 def _merge_dgt_into_fire(fire, dgt_items):
-    roads = []
+    road_details = []
+    seen = set()
 
     for item in dgt_items:
-        road = normalize_road(
-            item.get("road", "")
-        )
-
+        road = normalize_road(item.get("road", ""))
         if not road:
             continue
 
-        section = normalize(
-            item.get("section", "")
-        )
+        section = normalize(item.get("section", ""))
+        key = (road, section)
 
-        value = road
+        if key in seen:
+            continue
 
-        if section:
-            value = f"{road} — {section}"
+        seen.add(key)
+        road_details.append({
+            "road": road,
+            "section": section,
+            "direction": normalize(item.get("direction", "")),
+        })
 
-        if value not in roads:
-            roads.append(value)
-
-    if not roads:
+    if not road_details:
         return None
 
-    # Si la provincia del incendio no está disponible,
-    # la inferimos solo de las carreteras provinciales DGT.
-    province = fire.get(
-        "province",
-        "No disponible",
-    )
+    roads = [item["road"] for item in road_details]
 
+    province = fire.get("province", "No disponible")
     if province == "No disponible":
         for item in dgt_items:
-            road = normalize_road(
-                item.get("road", "")
-            )
-
-            match = re.match(
-                r"^([A-Z]{1,3})-\d{1,5}$",
-                road,
-            )
-
+            road = normalize_road(item.get("road", ""))
+            match = re.match(r"^([A-Z]{1,3})-\d{1,5}$", road)
             if match:
-                inferred = ROAD_PROVINCES.get(
-                    match.group(1)
-                )
+                inferred = ROAD_PROVINCES.get(match.group(1))
                 if inferred:
                     province = inferred
                     break
 
     return {
-        "fire": fire.get(
-            "fire",
-            "Incendio forestal",
-        ),
+        "fire": fire.get("fire", "Incendio forestal"),
         "province": province,
-        "municipality": fire.get(
-            "municipality",
-            "No disponible",
-        ),
+        "municipality": fire.get("municipality", "No disponible"),
         "road": ", ".join(roads),
+        "road_details": road_details,
         "section": "",
         "direction": "",
         "closure_type": "Total / no especificado",
         "detected_at": min(
             (
-                item.get(
-                    "detected_at",
-                    display_datetime(),
-                )
+                item.get("detected_at", display_datetime())
                 for item in dgt_items
             ),
             default=display_datetime(),
         ),
-        "fire_status": (
-            "Incendio forestal confirmado "
-            "por INFOCA/Junta"
-        ),
-        "infoca": (
-            "Incendio confirmado por "
-            "INFOCA/Junta"
-        ),
-        "dgt": (
-            "Corte confirmado por "
-            "INFOCAR/DGT"
-        ),
+        "fire_status": "Corte confirmado",
+        "infoca": "Corte confirmado",
+        "dgt": "Corte confirmado",
         "other_sources": " | ".join(
             fire.get("source_urls", [])
             or [fire.get("source_url", "")]
         ),
-        "source_url": fire.get(
-            "source_url",
-            "",
-        ),
-        "source_title": fire.get(
-            "source_title",
-            "",
-        ),
+        "source_url": fire.get("source_url", ""),
+        "source_title": fire.get("source_title", ""),
         "datex_ids": [
             item.get("datex_id", "")
             for item in dgt_items
@@ -1124,7 +1169,7 @@ def fetch_official_incidents():
     grouped = {}
 
     for fire in fires:
-        matched = [
+        direct_matches = [
             item
             for item in dgt_items
             if _dgt_matches_fire(
@@ -1133,6 +1178,12 @@ def fetch_official_incidents():
                 dgt_items,
             )
         ]
+
+        matched = _expand_fire_dgt_cluster(
+            fire,
+            direct_matches,
+            dgt_items,
+        )
 
         if not matched:
             continue
