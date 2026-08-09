@@ -658,7 +658,7 @@ def extract_municipality(title, text):
             value = normalize(match.group(1))
 
             value = re.split(
-                r"\s+(?:obliga|provoca|afecta|ha|y)\s+",
+                r"\s+(?:obliga|provoca|afecta|ha|y|pese\s+a)\s+",
                 value,
                 maxsplit=1,
                 flags=re.IGNORECASE,
@@ -1064,48 +1064,162 @@ def _group_key(fire):
     )
 
 
-def _merge_dgt_into_fire(fire, dgt_items):
-    road_details = []
-    seen = set()
+def _parse_section_values(section):
+    """
+    Extrae los valores numéricos de un campo PK ya normalizado.
+    Devuelve una lista de floats. No intenta interpretar coordenadas
+    ni textos de localización.
+    """
+    if not section:
+        return []
+
+    values = re.findall(
+        r"(?<!\d)(\d+(?:[.,]\d+)?)(?!\d)",
+        str(section),
+    )
+
+    result = []
+    for value in values:
+        try:
+            result.append(float(value.replace(",", ".")))
+        except ValueError:
+            continue
+
+    return result
+
+
+def _format_pk_value(value):
+    """
+    Formato limpio para PK: 31.8, 28.77, etc.
+    """
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return text
+
+
+def _merge_dgt_road_details(dgt_items):
+    """
+    Agrupa TODOS los registros INFOCAR de una misma carretera.
+
+    Si INFOCAR entrega dos puntos para una carretera (por ejemplo PK 20.8
+    y PK 31.8), no los presenta como dos cortes independientes: los
+    representa como un único tramo, PK 20.8–31.8.
+
+    Si solo existe un PK, conserva ese único punto.
+    Si no existe PK, no muestra ningún PK.
+    """
+    grouped = {}
 
     for item in dgt_items:
         road = normalize_road(item.get("road", ""))
         if not road:
             continue
 
+        key = road
+        entry = grouped.setdefault(
+            key,
+            {
+                "road": road,
+                "direction": normalize(item.get("direction", "")),
+                "pk_values": [],
+                "raw_sections": [],
+            },
+        )
+
         section = normalize(item.get("section", ""))
-        key = (road, section)
+        values = _parse_section_values(section)
 
-        if key in seen:
-            continue
+        if values:
+            entry["pk_values"].extend(values)
 
-        seen.add(key)
-        road_details.append({
-            "road": road,
-            "section": section,
-            "direction": normalize(item.get("direction", "")),
-        })
+        if not entry["direction"]:
+            entry["direction"] = normalize(
+                item.get("direction", "")
+            )
+
+    details = []
+
+    for entry in grouped.values():
+        values = sorted(
+            set(
+                round(value, 6)
+                for value in entry["pk_values"]
+            )
+        )
+
+        if len(values) >= 2:
+            start = _format_pk_value(values[0])
+            end = _format_pk_value(values[-1])
+            section = (
+                f"PK {start}–{end}"
+                if start != end
+                else f"PK {start}"
+            )
+        elif len(values) == 1:
+            section = f"PK {_format_pk_value(values[0])}"
+        else:
+            section = ""
+
+        details.append(
+            {
+                "road": entry["road"],
+                "section": section,
+                "direction": entry["direction"],
+            }
+        )
+
+    return details
+
+
+def _merge_dgt_into_fire(fire, dgt_items):
+    """
+    Construye una única fotografía del incendio.
+
+    Todos los registros INFOCAR pertenecientes al incendio se agrupan por
+    carretera y los PK de una misma carretera se consolidan en un único
+    tramo.
+    """
+    road_details = _merge_dgt_road_details(dgt_items)
 
     if not road_details:
         return None
 
-    roads = [item["road"] for item in road_details]
+    roads = [
+        detail["road"]
+        for detail in road_details
+    ]
 
-    province = fire.get("province", "No disponible")
+    province = fire.get(
+        "province",
+        "No disponible",
+    )
+
     if province == "No disponible":
         for item in dgt_items:
-            road = normalize_road(item.get("road", ""))
-            match = re.match(r"^([A-Z]{1,3})-\d{1,5}$", road)
+            road = normalize_road(
+                item.get("road", "")
+            )
+            match = re.match(
+                r"^([A-Z]{1,3})-\d{1,5}$",
+                road,
+            )
             if match:
-                inferred = ROAD_PROVINCES.get(match.group(1))
+                inferred = ROAD_PROVINCES.get(
+                    match.group(1)
+                )
                 if inferred:
                     province = inferred
                     break
 
     return {
-        "fire": fire.get("fire", "Incendio forestal"),
+        "fire": fire.get(
+            "fire",
+            "Incendio forestal",
+        ),
         "province": province,
-        "municipality": fire.get("municipality", "No disponible"),
+        "municipality": fire.get(
+            "municipality",
+            "No disponible",
+        ),
         "road": ", ".join(roads),
         "road_details": road_details,
         "section": "",
@@ -1113,30 +1227,41 @@ def _merge_dgt_into_fire(fire, dgt_items):
         "closure_type": "Total / no especificado",
         "detected_at": min(
             (
-                item.get("detected_at", display_datetime())
+                item.get(
+                    "detected_at",
+                    display_datetime(),
+                )
                 for item in dgt_items
             ),
             default=display_datetime(),
         ),
         "fire_status": "Corte confirmado",
-        "infoca": "Corte confirmado",
-        "dgt": "Corte confirmado",
+        "infoca": "Confirmado",
+        "dgt": "Confirmado",
         "other_sources": " | ".join(
             fire.get("source_urls", [])
             or [fire.get("source_url", "")]
         ),
-        "source_url": fire.get("source_url", ""),
-        "source_title": fire.get("source_title", ""),
+        "source_url": fire.get(
+            "source_url",
+            "",
+        ),
+        "source_title": fire.get(
+            "source_title",
+            "",
+        ),
         "datex_ids": [
             item.get("datex_id", "")
             for item in dgt_items
             if item.get("datex_id")
         ],
-        "situation_ids": sorted({
-            item.get("situation_id", "")
-            for item in dgt_items
-            if item.get("situation_id")
-        }),
+        "situation_ids": sorted(
+            {
+                item.get("situation_id", "")
+                for item in dgt_items
+                if item.get("situation_id")
+            }
+        ),
     }
 
 
