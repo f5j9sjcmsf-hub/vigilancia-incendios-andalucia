@@ -1,636 +1,362 @@
+import html
+import re
 from datetime import datetime
 
 
-def normalize(value):
+def _clean(value):
     if value is None:
         return ""
-
-    return " ".join(
-        str(value).strip().lower().split()
-    )
+    return str(value).strip()
 
 
-def clean_municipality(value):
+def _escape(value):
+    return html.escape(_clean(value), quote=True)
+
+
+def _format_detected_at(value):
     """
-    Limpia contaminaciones del tipo:
-
-        Niebla (Huelva)
-        Niebla (Huelva) (Granada)
-        Niebla - Portavoz del Gobierno Andaluz
+    Acepta:
+      - 09/08/2026 12:21
+      - ISO 8601
+    y devuelve siempre DD/MM/YYYY HH:MM.
     """
-
-    if not value:
-        return ""
-
-    value = str(value).strip()
-
-    # Eliminar todo lo que venga entre paréntesis.
-    value = value.split("(")[0]
-
-    # Eliminar restos de titulares.
-    separators = [
-        " - ",
-        " — ",
-        " – ",
-        " pese a ",
-        " uno de ",
-        " y hasta ",
-        " con ",
-    ]
-
-    lower = value.lower()
-
-    for separator in separators:
-        position = lower.find(
-            separator.lower()
-        )
-
-        if position != -1:
-            value = value[:position]
-            lower = value.lower()
-
-    return value.strip(
-        " .,:;–—-"
-    )
-
-
-def clean_fire_name(value):
-    """
-    Normaliza nombres como:
-
-        Incendio de Niebla
-        Incendio de Niebla (Huelva)
-        Incendio de Niebla pese a los continuos cambios de viento
-    """
-
-    if not value:
-        return "Incendio forestal"
-
-    value = str(value).strip()
-
-    value = value.split("(")[0]
-
-    lower = value.lower()
-
-    # Cortar titulares contaminados.
-    separators = [
-        " - ",
-        " — ",
-        " – ",
-        " pese a ",
-        " uno de ",
-        " con ",
-        " y hasta ",
-    ]
-
-    for separator in separators:
-
-        position = lower.find(
-            separator.lower()
-        )
-
-        if position != -1:
-            value = value[:position]
-            lower = value.lower()
-
-    value = value.strip(
-        " .,:;–—-"
-    )
-
-    # Normalizar variantes.
-    if lower.startswith(
-        "incendio de "
-    ):
-        return value
-
-    if lower.startswith(
-        "incendio "
-    ):
-        return value
-
-    return f"Incendio de {value}"
-
-
-def get_fire_key(item):
-    """
-    La clave identifica el incendio por:
-
-        provincia + municipio
-
-    y NO por el titular de la noticia.
-    """
-
-    municipality = clean_municipality(
-        item.get("municipality")
-    )
-
-    province = clean_municipality(
-        item.get("province")
-    )
-
-    if municipality:
-        return (
-            f"{normalize(province)}|"
-            f"{normalize(municipality)}"
-        )
-
-    fire = clean_fire_name(
-        item.get("fire")
-    )
-
-    return (
-        f"{normalize(province)}|"
-        f"{normalize(fire)}"
-    )
-
-
-def split_roads(value):
-
-    if not value:
-        return []
-
-    result = [str(value)]
-
-    separators = [
-        ",",
-        ";",
-        " / ",
-        " | ",
-    ]
-
-    for separator in separators:
-
-        new_result = []
-
-        for part in result:
-            new_result.extend(
-                part.split(separator)
-            )
-
-        result = new_result
-
-    cleaned = []
-
-    for road in result:
-
-        road = road.strip()
-
-        if not road:
-            continue
-
-        if road.lower() == "no disponible":
-            continue
-
-        if road not in cleaned:
-            cleaned.append(
-                road
-            )
-
-    return cleaned
-
-
-def merge_roads(existing, new):
-
-    roads = []
-
-    for value in (
-        existing,
-        new,
-    ):
-
-        for road in split_roads(value):
-
-            if road not in roads:
-                roads.append(
-                    road
-                )
-
-    return ", ".join(roads)
-
-
-def format_time(value):
-    """
-    Convierte una fecha ISO a:
-
-        DD/MM/YYYY HH:MM
-
-    Ejemplo:
-
-        09/08/2026 08:52
-    """
-
+    value = _clean(value)
     if not value:
         return "No disponible"
 
+    if re.fullmatch(r"\d{2}/\d{2}/\d{4} \d{2}:\d{2}", value):
+        return value
+
     try:
-
-        text = str(value)
-
-        if "T" in text:
-
-            dt = datetime.fromisoformat(
-                text.replace(
-                    "Z",
-                    "+00:00"
-                )
-            )
-
-            return dt.strftime(
-                "%d/%m/%Y %H:%M"
-            )
-
-    except Exception:
-        pass
-
-    return str(value)
-
-
-def format_sources(value):
-
-    if not value:
-        return "• No disponible"
-
-    if isinstance(
-        value,
-        list
-    ):
-        sources = value
-
-    else:
-        sources = [
-            item.strip()
-            for item in str(value).split("|")
-            if item.strip()
-        ]
-
-    lines = []
-
-    for source in sources:
-
-        lines.append(
-            f"• {source}"
+        parsed = datetime.fromisoformat(
+            value.replace("Z", "+00:00")
         )
+        return parsed.strftime("%d/%m/%Y %H:%M")
+    except ValueError:
+        return value[:16]
 
-    return "\n".join(
-        lines
+
+def _road_details(item):
+    """
+    Devuelve una lista de:
+      {"road": "...", "section": "...", "direction": "..."}
+    Compatible también con items antiguos que solo tengan 'road'.
+    """
+    details = item.get("road_details")
+
+    if isinstance(details, list):
+        result = []
+        seen = set()
+
+        for detail in details:
+            if not isinstance(detail, dict):
+                continue
+
+            road = _clean(detail.get("road"))
+            section = _clean(detail.get("section"))
+            direction = _clean(detail.get("direction"))
+
+            if not road:
+                continue
+
+            key = (road.lower(), section.lower(), direction.lower())
+            if key in seen:
+                continue
+
+            seen.add(key)
+            result.append(
+                {
+                    "road": road,
+                    "section": section,
+                    "direction": direction,
+                }
+            )
+
+        if result:
+            return result
+
+    # Compatibilidad con la estructura anterior.
+    roads = [
+        _clean(value)
+        for value in _clean(item.get("road")).split(",")
+        if _clean(value)
+    ]
+
+    section = _clean(item.get("section"))
+
+    return [
+        {
+            "road": road,
+            "section": section,
+            "direction": _clean(item.get("direction")),
+        }
+        for road in roads
+    ]
+
+
+def _format_road_line(detail):
+    road = _escape(detail.get("road"))
+    section = _escape(detail.get("section"))
+
+    if not road:
+        return ""
+
+    if section:
+        return f"• <b>{road}</b> — <i>{section}</i>"
+
+    return f"• <b>{road}</b>"
+
+
+def _official_sources(item):
+    raw = item.get("other_sources")
+
+    if isinstance(raw, (list, tuple, set)):
+        values = raw
+    else:
+        values = re.split(r"\s*\|\s*", _clean(raw))
+
+    sources = []
+    seen = set()
+
+    for value in values:
+        value = _clean(value)
+        if not value:
+            continue
+
+        if value in seen:
+            continue
+
+        seen.add(value)
+        sources.append(value)
+
+    return sources
+
+
+def incident_key(item):
+    """
+    Un único aviso por incendio.
+
+    No utiliza la lista de carreteras: si el mismo incendio incorpora
+    nuevas carreteras en una ejecución posterior, no genera otro aviso.
+    """
+    return "|".join(
+        [
+            _clean(item.get("fire")).strip().lower(),
+            _clean(item.get("province")).strip().lower(),
+            _clean(item.get("municipality")).strip().lower(),
+        ]
     )
 
 
 def format_new_incident(item):
+    lines = [
+        "<b>🔥 CORTE DE CARRETERA POR INCENDIO</b>",
+        "",
+        f"<i>{_escape(item.get('fire', 'Incendio forestal'))}</i>",
+        f"📍 {_escape(item.get('municipality', 'No disponible'))}"
+        f" ({_escape(item.get('province', 'No disponible'))})",
+        "",
+        "<b>🚧 CARRETERAS AFECTADAS</b>",
+    ]
 
-    fire = clean_fire_name(
-        item.get("fire")
+    for detail in _road_details(item):
+        line = _format_road_line(detail)
+        if line:
+            lines.append(line)
+
+    if len(lines) == 6:
+        # No debería ocurrir en una incidencia válida, pero evita dejar
+        # un encabezado vacío si los datos llegan incompletos.
+        lines.pop()
+
+    lines.extend(
+        [
+            "",
+            f"🕐 Detectado: "
+            f"{_escape(_format_detected_at(item.get('detected_at')))}",
+            "Situación: <b>Corte confirmado</b>",
+        ]
     )
 
-    province = clean_municipality(
-        item.get("province")
-    )
+    sources = _official_sources(item)
 
-    municipality = clean_municipality(
-        item.get("municipality")
-    )
-
-    roads = split_roads(
-        item.get("road")
-    )
-
-    section = item.get(
-        "section"
-    )
-
-    detected_at = format_time(
-        item.get("detected_at")
-    )
-
-    infoca = item.get(
-        "infoca"
-    ) or "No disponible"
-
-    dgt = item.get(
-        "dgt"
-    ) or "No disponible"
-
-    sources = format_sources(
-        item.get("other_sources")
-    )
-
-    # --------------------------------------------------------
-    # CARRETERAS
-    # --------------------------------------------------------
-
-    road_lines = []
-
-    for road in roads:
-
-        if (
-            section
-            and section != "No disponible"
-        ):
-
-            road_lines.append(
-                f"• <b>{road}</b> — "
-                f"<i>{section}</i>"
-            )
-
-        else:
-
-            road_lines.append(
-                f"• <b>{road}</b>"
-            )
-
-    if not road_lines:
-
-        road_lines.append(
-            "• No disponible"
+    if sources:
+        lines.extend(
+            [
+                "",
+                "Fuentes oficiales:",
+            ]
         )
 
-    roads_text = "\n".join(
-        road_lines
+        for source in sources:
+            escaped = _escape(source)
+
+            if re.match(r"^https?://", source, re.IGNORECASE):
+                lines.append(
+                    f"• <a href=\"{escaped}\">{escaped}</a>"
+                )
+            else:
+                lines.append(
+                    f"• {escaped}"
+                )
+
+    lines.extend(
+        [
+            "",
+            "¿Ya lo has atendido?",
+        ]
     )
 
-    return (
-        "🔥 <b>CORTE DE CARRETERA "
-        "POR INCENDIO</b>\n\n"
-
-        f"<i>{fire}</i>\n\n"
-
-        f"📍 {municipality} "
-        f"({province})\n\n"
-
-        "🚧 <b>CARRETERAS AFECTADAS</b>\n"
-        f"{roads_text}\n\n"
-
-        f"🕐 Detectado: "
-        f"<b>{detected_at}</b>\n\n"
-
-        f"Situación: "
-        f"{item.get('fire_status') or 'No disponible'}\n\n"
-
-        f"INFOCA: {infoca}\n"
-        f"DGT: {dgt}\n\n"
-
-        "<b>Fuentes oficiales:</b>\n"
-        f"{sources}\n\n"
-
-        "¿Ya lo has atendido?"
-    )
+    return "\n".join(lines)
 
 
 def format_reopening(item):
+    lines = [
+        "<b>🔓 CARRETERA REABIERTA</b>",
+        "",
+        f"<i>{_escape(item.get('fire', 'Incendio forestal'))}</i>",
+        f"📍 {_escape(item.get('municipality', 'No disponible'))}"
+        f" ({_escape(item.get('province', 'No disponible'))})",
+        "",
+    ]
 
-    fire = clean_fire_name(
-        item.get("fire")
-    )
+    road = _escape(item.get("road"))
+    section = _escape(item.get("section"))
 
-    road = item.get(
-        "road",
-        "No disponible"
-    )
+    if road:
+        if section:
+            lines.append(
+                f"🚧 <b>{road}</b> — <i>{section}</i>"
+            )
+        else:
+            lines.append(
+                f"🚧 <b>{road}</b>"
+            )
 
-    section = item.get(
-        "section"
-    )
-
-    municipality = clean_municipality(
-        item.get("municipality")
-    )
-
-    province = clean_municipality(
-        item.get("province")
-    )
-
-    reopened_at = format_time(
+    reopened_at = _format_detected_at(
         item.get("reopened_at")
     )
 
-    source = item.get(
-        "source",
-        "No disponible"
+    lines.extend(
+        [
+            "",
+            f"🕐 Reabierta: {_escape(reopened_at)}",
+            "Situación: <b>Reapertura confirmada</b>",
+        ]
     )
 
-    if (
-        section
-        and section != "No disponible"
-    ):
+    source = _clean(item.get("source"))
 
-        road_text = (
-            f"<b>{road}</b> — "
-            f"<i>{section}</i>"
+    if source:
+        lines.extend(
+            [
+                "Fuente oficial:",
+                f"• <a href=\"{_escape(source)}\">"
+                f"{_escape(source)}</a>",
+            ]
         )
 
-    else:
-
-        road_text = (
-            f"<b>{road}</b>"
-        )
-
-    return (
-        "🔓 <b>CARRETERA REABIERTA</b>\n\n"
-
-        f"<i>{fire}</i>\n\n"
-
-        f"📍 {municipality} "
-        f"({province})\n\n"
-
-        f"🚧 {road_text}\n\n"
-
-        f"🕐 Reabierta: "
-        f"<b>{reopened_at}</b>\n\n"
-
-        "Fuente oficial:\n"
-        f"• {source}"
-    )
+    return "\n".join(lines)
 
 
-def process_incidents(
-    state,
-    detected
-):
-
+def process_incidents(state, detected):
     alerts = []
-
-    incidents = state.setdefault(
-        "incidents",
-        {}
-    )
+    incidents = state.setdefault("incidents", {})
 
     for item in detected:
-
-        # ----------------------------------------------------
-        # NORMALIZAR ANTES DE AGRUPAR
-        # ----------------------------------------------------
-
-        item = dict(item)
-
-        item["municipality"] = (
-            clean_municipality(
-                item.get(
-                    "municipality"
-                )
-            )
-        )
-
-        item["province"] = (
-            clean_municipality(
-                item.get(
-                    "province"
-                )
-            )
-        )
-
-        item["fire"] = (
-            clean_fire_name(
-                item.get(
-                    "fire"
-                )
-            )
-        )
-
-        key = get_fire_key(
-            item
-        )
-
-        roads = split_roads(
-            item.get("road")
-        )
-
-        # ----------------------------------------------------
-        # NUEVA INCIDENCIA
-        # ----------------------------------------------------
+        key = incident_key(item)
 
         if key not in incidents:
-
-            stored = {
+            incidents[key] = {
                 **item,
-                "road": ", ".join(
-                    roads
-                ),
                 "status": "PENDIENTE",
                 "notified": True,
                 "reopened_notified": False,
             }
 
-            incidents[key] = stored
-
             alerts.append(
-                format_new_incident(
-                    stored
-                )
+                format_new_incident(item)
             )
 
-            continue
+        else:
+            # Actualiza la fotografía del incendio sin generar un
+            # segundo aviso por cada nueva carretera/noticia.
+            current = incidents[key]
 
-        # ----------------------------------------------------
-        # INCIDENCIA YA EXISTENTE
-        # ----------------------------------------------------
+            for field, value in item.items():
+                if value in ("", None):
+                    continue
 
-        existing = incidents[key]
+                current[field] = value
 
-        existing_roads = split_roads(
-            existing.get("road")
-        )
-
-        merged_roads = []
-
-        for road in (
-            existing_roads
-            + roads
-        ):
-
-            if road not in merged_roads:
-
-                merged_roads.append(
-                    road
-                )
-
-        # Actualizar información.
-        for field, value in item.items():
-
-            if value in (
-                "",
-                None,
-                "No disponible",
-            ):
-                continue
-
-            existing[field] = value
-
-        existing["fire"] = clean_fire_name(
-            existing.get("fire")
-        )
-
-        existing["municipality"] = (
-            clean_municipality(
-                existing.get(
-                    "municipality"
-                )
-            )
-        )
-
-        existing["province"] = (
-            clean_municipality(
-                existing.get(
-                    "province"
-                )
-            )
-        )
-
-        existing["road"] = ", ".join(
-            merged_roads
-        )
-
-        # ----------------------------------------------------
-        # IMPORTANTE:
-        # NO GENERAR OTRO AVISO POR OTRA NOTICIA
-        # DEL MISMO INCENDIO.
-        # ----------------------------------------------------
+            # La lista de carreteras se reemplaza por la fotografía
+            # actual de INFOCAR, no se acumulan cortes ya inexistentes.
+            if item.get("road_details") is not None:
+                current["road_details"] = item["road_details"]
 
     return alerts
 
 
-def process_reopenings(
-    state,
-    reopenings
-):
-
-    alerts = []
-
-    incidents = state.setdefault(
-        "incidents",
-        {}
+def _reopening_key(item):
+    return "|".join(
+        [
+            _clean(item.get("fire")).lower(),
+            _clean(item.get("province")).lower(),
+            _clean(item.get("municipality")).lower(),
+            _clean(item.get("road")).lower(),
+            _clean(item.get("section")).lower(),
+        ]
     )
 
+
+def process_reopenings(state, reopenings):
+    alerts = []
+    incidents = state.setdefault("incidents", {})
+
     for item in reopenings:
+        # Busca el incendio existente sin depender de la carretera,
+        # porque el aviso activo puede contener varias.
+        fire = _clean(item.get("fire")).lower()
+        province = _clean(item.get("province")).lower()
+        municipality = _clean(item.get("municipality")).lower()
 
-        key = get_fire_key(
-            item
-        )
+        matching_key = None
 
-        if key not in incidents:
+        for key, current in incidents.items():
+            if (
+                _clean(current.get("fire")).lower() == fire
+                and _clean(current.get("province")).lower() == province
+                and _clean(current.get("municipality")).lower() == municipality
+            ):
+                matching_key = key
+                break
+
+        if matching_key is None:
             continue
 
-        incident = incidents[key]
+        current = incidents[matching_key]
 
-        if incident.get(
-            "reopened_notified"
-        ):
+        road = _clean(item.get("road"))
+        active_roads = {
+            _clean(detail.get("road")).lower()
+            for detail in _road_details(current)
+        }
+
+        # Nunca notificamos una reapertura de una carretera que todavía
+        # figura como activa en el estado almacenado.
+        if road and road.lower() in active_roads:
             continue
 
-        incident[
-            "road_open"
-        ] = True
+        reopen_key = _reopening_key(item)
 
-        incident[
-            "reopened_notified"
-        ] = True
+        if current.get("last_reopening_key") == reopen_key:
+            continue
+
+        current["last_reopening_key"] = reopen_key
+        current["road_open"] = True
 
         alerts.append(
-            format_reopening(
-                {
-                    **incident,
-                    **item,
-                }
-            )
+            format_reopening(item)
         )
 
     return alerts
