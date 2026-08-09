@@ -764,23 +764,26 @@ def _format_km_range(values):
 
 def _datex_km_values(record):
     """
-    Extrae TODOS los PK disponibles en el registro DATEX.
+    Extrae únicamente PK publicados explícitamente por DATEX.
 
-    INFOCAR puede publicar los extremos del tramo mediante distintos campos
-    o mediante registros diferentes de la misma carretera.
+    IMPORTANTE: no se utilizan los campos genéricos ``from``/``to`` porque
+    en DATEX pueden contener coordenadas, referencias u otros valores que
+    no son puntos kilométricos.
     """
     values = []
 
     field_names = (
         "kilometerPoint",
         "kilometrePoint",
-        "pk",
-        "from",
-        "to",
         "fromKilometerPoint",
         "toKilometerPoint",
         "fromKilometrePoint",
         "toKilometrePoint",
+        "kilometerPointStart",
+        "kilometerPointEnd",
+        "kilometrePointStart",
+        "kilometrePointEnd",
+        "pk",
     )
 
     for name in field_names:
@@ -789,8 +792,6 @@ def _datex_km_values(record):
             if not text:
                 continue
 
-            # Evita interpretar coordenadas/otros números como PK. En los
-            # campos de PK buscamos valores numéricos con decimal opcional.
             matches = re.findall(
                 r"(?<![\d.-])(\d+(?:[.,]\d+)?)(?![\d.-])",
                 text,
@@ -802,12 +803,10 @@ def _datex_km_values(record):
                 except ValueError:
                     continue
 
-                # PK razonable para una carretera española.
                 if 0 <= value <= 1000:
                     values.append(value)
 
-    return sorted(set(values))
-
+    return sorted(set(round(value, 5) for value in values))
 
 def _datex_km(record):
     return _format_km_range(
@@ -1002,93 +1001,74 @@ def parse_datex_incidents(xml_text, source_url):
 
 def merge_datex_road_records(items):
     """
-    Consolida registros DATEX de la misma carretera y del mismo incendio.
+    Consolida únicamente registros que representan el mismo tramo.
 
-    Es especialmente importante para INFOCAR cuando publica dos registros
-    para los dos extremos de un tramo: ambos deben acabar en un único aviso.
+    No agrupa por carretera completa: dos cortes distintos de la misma
+    carretera deben permanecer como incidencias independientes.
     """
     groups = {}
 
     for item in items:
         road = normalize(item.get("road", "")).upper()
         province = normalize(item.get("province", "")).lower()
+        direction = normalize(item.get("direction", "")).lower()
+        km_values = sorted(
+            set(round(float(v), 5) for v in (item.get("km_values") or []))
+        )
 
         if not road:
             continue
 
-        # No usamos datex_id como clave aquí: dos IDs distintos pueden ser
-        # precisamente los dos extremos del mismo tramo.
-        key = f"{province}|{road}"
+        # Si hay PK, la identidad del tramo se basa en carretera + PK +
+        # sentido. Si no hay PK, conservamos el registro por su ID DATEX.
+        if km_values:
+            km_key = ",".join(_format_km(v) for v in km_values)
+            key = f"{province}|{road}|{km_key}|{direction}"
+        else:
+            datex_id = normalize(item.get("datex_id", "")).lower()
+            key = f"{province}|{road}|NO_KM|{direction}|{datex_id}"
 
         if key not in groups:
             groups[key] = dict(item)
-            groups[key]["km_values"] = list(
-                item.get("km_values") or []
+            groups[key]["km_values"] = km_values
+            groups[key]["section"] = (
+                _format_km_range(km_values) if km_values else "No disponible"
             )
             continue
 
         current = groups[key]
 
-        # Unir PK de todos los registros.
-        values = list(current.get("km_values") or [])
-        values.extend(item.get("km_values") or [])
-
-        # También recuperamos cualquier PK que haya quedado en section.
-        for match in re.findall(
-            r"(?<![\d.-])(\d+(?:[.,]\d+)?)(?![\d.-])",
-            normalize(item.get("section", "")),
-        ):
-            try:
-                values.append(
-                    float(match.replace(",", "."))
-                )
-            except ValueError:
-                pass
-
-        values = sorted(set(round(v, 5) for v in values))
+        values = sorted(
+            set(
+                round(float(v), 5)
+                for v in (current.get("km_values") or []) + km_values
+            )
+        )
         current["km_values"] = values
-        current["section"] = _format_km_range(values)
+        current["section"] = _format_km_range(values) if values else "No disponible"
 
-        # Conservamos coordenadas de todos los registros.
         coords = list(current.get("coordinates") or [])
         for coord in item.get("coordinates") or []:
             if coord not in coords:
                 coords.append(coord)
         current["coordinates"] = coords
 
-        # Combinar fuentes oficiales.
-        existing_sources = {
-            current.get("source_url", ""),
-        }
+        existing_sources = set(current.get("source_urls") or [])
+        if current.get("source_url"):
+            existing_sources.add(current["source_url"])
         if item.get("source_url"):
             existing_sources.add(item["source_url"])
+        current["source_urls"] = sorted(existing_sources)
 
-        current["source_urls"] = [
-            url for url in existing_sources if url
-        ]
-
-        # Mantener la información no vacía más completa.
         for field, value in item.items():
-            if field in {
-                "km_values",
-                "section",
-                "coordinates",
-                "source_urls",
-            }:
+            if field in {"km_values", "section", "coordinates", "source_urls"}:
                 continue
-
             if value in ("", None, "No disponible"):
                 continue
-
-            if current.get(field) in (
-                "",
-                None,
-                "No disponible",
-            ):
+            if current.get(field) in ("", None, "No disponible"):
                 current[field] = value
 
     return list(groups.values())
-
 
 def fetch_datex_incidents():
     """
@@ -1133,59 +1113,46 @@ def fetch_datex_incidents():
 
 def deduplicate_datex_incidents(items):
     """
-    Deduplica el mismo registro que aparece simultáneamente en INFOCAR y NAP.
+    Deduplica la misma incidencia publicada por INFOCAR y NAP.
 
-    Prioridad:
-        identificador DATEX
-        carretera + PK + sentido
+    La clave incluye carretera, PK y sentido para no fusionar cortes
+    diferentes de una misma carretera.
     """
     unique = {}
 
     for item in items:
+        province = normalize(item.get("province", "")).lower()
+        road = normalize(item.get("road", "")).lower()
+        direction = normalize(item.get("direction", "")).lower()
+        section = normalize(item.get("section", "")).lower()
 
-        datex_id = item.get(
-            "datex_id"
-        )
-
+        # El mismo datex_id es la evidencia más fuerte de duplicado.
+        datex_id = normalize(item.get("datex_id", "")).lower()
         if datex_id:
-            key = f"id|{normalize(datex_id).lower()}"
+            key = f"id|{datex_id}"
         else:
-            key = "|".join(
-                normalize(
-                    item.get(field, "")
-                ).lower()
-                for field in (
-                    "province",
-                    "road",
-                    "direction",
-                )
-            )
+            key = f"{province}|{road}|{section}|{direction}"
 
         if key not in unique:
             unique[key] = item
             continue
 
         current = unique[key]
-
         for field, value in item.items():
-
-            if value in (
-                "",
-                None,
-                "No disponible",
-            ):
+            if value in ("", None, "No disponible"):
                 continue
-
-            if current.get(field) in (
-                "",
-                None,
-                "No disponible",
-            ):
+            if current.get(field) in ("", None, "No disponible"):
                 current[field] = value
 
-    return list(
-        unique.values()
-    )
+        # Unir URLs de ambas publicaciones.
+        urls = set(current.get("source_urls") or [])
+        if current.get("source_url"):
+            urls.add(current["source_url"])
+        if item.get("source_url"):
+            urls.add(item["source_url"])
+        current["source_urls"] = sorted(urls)
+
+    return list(unique.values())
 
 
 # ============================================================
