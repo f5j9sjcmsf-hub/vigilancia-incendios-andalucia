@@ -134,14 +134,14 @@ def _official_sources(item):
 
 def incident_key(item):
     """
-    Un único aviso por incendio.
+    Identidad estable del incendio.
 
-    No utiliza la lista de carreteras: si el mismo incendio incorpora
-    nuevas carreteras en una ejecución posterior, no genera otro aviso.
+    No utiliza el titular/nombre textual del incendio porque INFOCA puede
+    publicar el mismo incendio con titulares diferentes. Provincia +
+    municipio evita avisos duplicados por cambios de titular.
     """
     return "|".join(
         [
-            _clean(item.get("fire")).strip().lower(),
             _clean(item.get("province")).strip().lower(),
             _clean(item.get("municipality")).strip().lower(),
         ]
@@ -174,7 +174,8 @@ def format_new_incident(item):
             "",
             f"🕐 Detectado: "
             f"{_escape(_format_detected_at(item.get('detected_at')))}",
-            "Situación: <b>Corte confirmado</b>",
+            f"<b>DGT:</b> <i>{_escape(item.get('dgt') or 'No')}</i>",
+            f"<b>INFOCA:</b> <i>{_escape(item.get('infoca') or 'No')}</i>",
         ]
     )
 
@@ -259,40 +260,122 @@ def format_reopening(item):
     return "\n".join(lines)
 
 
+def _merge_incident_items(items):
+    """
+    Fusiona varias detecciones del mismo incendio antes de decidir si se
+    envía el aviso. Así, aunque INFOCA entregue varias actualizaciones en
+    la misma ejecución, Telegram recibe una sola fotografía completa.
+    """
+    if not items:
+        return None
+
+    base = dict(items[0])
+
+    merged_details = []
+    seen_details = set()
+
+    for item in items:
+        for detail in _road_details(item):
+            road = _clean(detail.get("road"))
+            section = _clean(detail.get("section"))
+            direction = _clean(detail.get("direction"))
+
+            if not road:
+                continue
+
+            key = (
+                road.lower(),
+                section.lower(),
+                direction.lower(),
+            )
+
+            if key in seen_details:
+                continue
+
+            seen_details.add(key)
+            merged_details.append(
+                {
+                    "road": road,
+                    "section": section,
+                    "direction": direction,
+                }
+            )
+
+        # Conserva todas las fuentes oficiales.
+        existing_sources = _official_sources(base)
+        for source in _official_sources(item):
+            if source not in existing_sources:
+                existing_sources.append(source)
+
+        base["other_sources"] = " | ".join(existing_sources)
+
+        # Preferimos un valor real frente a uno vacío.
+        for field in (
+            "fire",
+            "province",
+            "municipality",
+            "detected_at",
+            "dgt",
+            "infoca",
+            "source_url",
+            "source_title",
+        ):
+            value = item.get(field)
+            if value not in ("", None, "No disponible"):
+                if base.get(field) in (
+                    "",
+                    None,
+                    "No disponible",
+                ):
+                    base[field] = value
+
+    base["road_details"] = merged_details
+    base["road"] = ", ".join(
+        detail["road"]
+        for detail in merged_details
+    )
+
+    return base
+
+
 def process_incidents(state, detected):
     alerts = []
     incidents = state.setdefault("incidents", {})
 
+    # Agrupar primero. Esto evita que dos artículos del mismo incendio
+    # produzcan dos mensajes separados dentro de la misma ejecución.
+    batches = {}
+
     for item in detected:
         key = incident_key(item)
+        batches.setdefault(key, []).append(item)
+
+    for key, items in batches.items():
+        merged = _merge_incident_items(items)
+        if not merged:
+            continue
 
         if key not in incidents:
             incidents[key] = {
-                **item,
+                **merged,
                 "status": "PENDIENTE",
                 "notified": True,
                 "reopened_notified": False,
             }
 
             alerts.append(
-                format_new_incident(item)
+                format_new_incident(merged)
             )
 
         else:
-            # Actualiza la fotografía del incendio sin generar un
-            # segundo aviso por cada nueva carretera/noticia.
             current = incidents[key]
 
-            for field, value in item.items():
+            # Actualiza la fotografía actual completa del incendio.
+            for field, value in merged.items():
                 if value in ("", None):
                     continue
 
                 current[field] = value
-
-            # La lista de carreteras se reemplaza por la fotografía
-            # actual de INFOCAR, no se acumulan cortes ya inexistentes.
-            if item.get("road_details") is not None:
-                current["road_details"] = item["road_details"]
 
     return alerts
 
