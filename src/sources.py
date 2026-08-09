@@ -1,6 +1,7 @@
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
@@ -19,10 +20,12 @@ JUNTA_SEARCH_URL = (
     "emergencias112"
 )
 
+TIMEZONE = ZoneInfo("Europe/Madrid")
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 "
-        "(compatible; VigilanciaIncendiosAndalucia/1.0)"
+        "(compatible; VigilanciaIncendiosAndalucia/2.0)"
     )
 }
 
@@ -36,49 +39,49 @@ TIMEOUT = 30
 FIRE_KEYWORDS = (
     "incendio forestal",
     "incendio",
-    "plan infoca",
-    "infoca",
     "fuego forestal",
+    "infoca",
+    "plan infoca",
 )
 
-ROAD_KEYWORDS = (
+ROAD_WORDS = (
     "carretera",
     "carreteras",
     "autovía",
     "autovia",
     "autopista",
     "vía",
-    "trafico",
+    "via",
     "tráfico",
+    "trafico",
     "circulación",
     "circulacion",
 )
 
-CLOSURE_KEYWORDS = (
-    "corte",
-    "cortada",
-    "cortado",
-    "cerrada",
-    "cerrado",
-    "cierre",
-    "interrumpida",
-    "interrumpido",
-    "sin circulación",
-    "sin circulacion",
-    "restricción",
-    "restriccion",
+# Expresiones que indican una afectación REAL de circulación.
+CLOSURE_PATTERNS = (
+    r"\bcortad[ao]s?\b",
+    r"\bcerrad[ao]s?\b",
+    r"\binterrumpid[ao]s?\b",
+    r"\bsin\s+circulaci[oó]n\b",
+    r"\bcorte\s+de\s+(?:la\s+)?(?:carretera|tr[aá]fico|circulaci[oó]n)\b",
+    r"\bcierre\s+de\s+(?:la\s+)?(?:carretera|tr[aá]fico|circulaci[oó]n)\b",
+    r"\brestricci[oó]n\s+(?:de\s+)?circulaci[oó]n\b",
+    r"\btr[aá]fico\s+cortado\b",
+    r"\bcirculaci[oó]n\s+interrumpida\b",
+    r"\bqueda\s+cortad[ao]\b",
+    r"\bpermanece\s+cortad[ao]\b",
+    r"\bse\s+mantiene\s+cortad[ao]\b",
+    r"\bse\s+ha\s+cortado\b",
+    r"\bse\s+procede\s+al\s+corte\b",
 )
 
-REOPEN_KEYWORDS = (
-    "reabierta",
-    "reabierto",
-    "reapertura",
-    "abierta al tráfico",
-    "abierta al trafico",
-    "abierto al tráfico",
-    "abierto al trafico",
-    "restablecida la circulación",
-    "restablecida la circulacion",
+REOPEN_PATTERNS = (
+    r"\breabiert[ao]s?\b",
+    r"\breapertura\b",
+    r"\babiert[ao]\s+al\s+tr[aá]fico\b",
+    r"\brestablecida?\s+la\s+circulaci[oó]n\b",
+    r"\bse\s+restablece\s+la\s+circulaci[oó]n\b",
 )
 
 
@@ -94,7 +97,6 @@ def get(url):
     )
 
     response.raise_for_status()
-
     return response
 
 
@@ -122,16 +124,32 @@ def contains_any(text, keywords):
     )
 
 
+def now_spain():
+    """
+    Hora oficial de España peninsular.
+    Formato corto HH:MM.
+    """
+    return datetime.now(TIMEZONE).strftime("%H:%M")
+
+
+# ============================================================
+# PROVINCIAS
+# ============================================================
+
 def find_province(text):
     text_lower = text.lower()
 
+    # Primero buscamos coincidencias completas.
     for province in ANDALUSIA_PROVINCES:
-        if province.lower() in text_lower:
+        if re.search(
+            rf"\b{re.escape(province.lower())}\b",
+            text_lower,
+        ):
             return province
 
-    # Casos habituales
     aliases = {
         "almeria": "Almería",
+        "almería": "Almería",
         "cádiz": "Cádiz",
         "cadiz": "Cádiz",
         "córdoba": "Córdoba",
@@ -146,61 +164,72 @@ def find_province(text):
     }
 
     for alias, province in aliases.items():
-        if alias in text_lower:
+        if re.search(
+            rf"\b{re.escape(alias)}\b",
+            text_lower,
+        ):
             return province
 
     return "No disponible"
 
 
-def extract_road(text):
-    """
-    Busca identificadores habituales de carreteras andaluzas.
+# ============================================================
+# CARRETERAS
+# ============================================================
 
-    Ejemplos:
-    A-7
-    A-92
-    A-44
-    N-340
-    MA-8300
-    AL-6109
+def extract_roads(text):
+    """
+    Extrae carreteras reales.
+
+    Evita prefijos vacíos y números sueltos como:
+    -112
+    -2026
+    -061
+
+    Ejemplos válidos:
+    A-49
+    A-493
+    N-435
+    HU-3106
+    HU-4103
     GR-3201
-    CA-9101
+    MA-8300
     SE-5203
-    CO-7409
-    JA-xxxx
     """
 
-    pattern = re.compile(
-        r"\b("
-        r"A|AP|N|"
-        r"AL|CA|CO|GR|H|HU|J|JA|MA|SE|"
-        r"AB|EX|"
-        r""
-        r")-?\s?(\d{3,5})\b",
-        re.IGNORECASE,
-    )
+    patterns = [
+        # Carreteras estatales:
+        r"\b(?:A|AP|N)-\s?\d{1,4}\b",
 
-    matches = pattern.findall(text)
-
-    if not matches:
-        return "No disponible"
+        # Carreteras provinciales/autonómicas:
+        r"\b(?:AL|CA|CO|GR|H|HU|J|JA|MA|SE)-\s?\d{3,5}\b",
+    ]
 
     roads = []
 
-    for prefix, number in matches:
-        road = f"{prefix.upper()}-{number}"
+    for pattern in patterns:
+        for match in re.findall(
+            pattern,
+            text,
+            flags=re.IGNORECASE,
+        ):
+            road = re.sub(
+                r"\s+",
+                "",
+                match.upper(),
+            )
 
-        if road not in roads:
-            roads.append(road)
+            if road not in roads:
+                roads.append(road)
 
-    return ", ".join(roads)
+    return roads
 
+
+# ============================================================
+# TRAMOS
+# ============================================================
 
 def extract_section(text):
-    """
-    Extrae tramos expresados mediante kilómetros.
-    """
-
     patterns = [
         r"(?:entre|del)\s+(?:los\s+)?(?:PK|puntos kilométricos?)\s*"
         r"(\d+(?:[.,]\d+)?)\s*(?:y|al)\s*(\d+(?:[.,]\d+)?)",
@@ -208,16 +237,19 @@ def extract_section(text):
         r"(?:entre|del)\s+(?:los\s+)?kilómetros?\s*"
         r"(\d+(?:[.,]\d+)?)\s*(?:y|al)\s*(\d+(?:[.,]\d+)?)",
 
-        r"kilómetro\s+(\d+(?:[.,]\d+)?)",
-        r"km\s+(\d+(?:[.,]\d+)?)",
-        r"PK\s+(\d+(?:[.,]\d+)?)",
+        r"\bkilómetro\s+(\d+(?:[.,]\d+)?)",
+
+        r"\bkm\s+(\d+(?:[.,]\d+)?)",
+
+        r"\bPK\s+(\d+(?:[.,]\d+)?)",
     ]
 
     for pattern in patterns:
+
         match = re.search(
             pattern,
             text,
-            re.IGNORECASE,
+            flags=re.IGNORECASE,
         )
 
         if not match:
@@ -238,7 +270,12 @@ def extract_section(text):
     return "No disponible"
 
 
+# ============================================================
+# SENTIDO
+# ============================================================
+
 def extract_direction(text):
+
     directions = (
         "sentido Cádiz",
         "sentido Sevilla",
@@ -252,89 +289,231 @@ def extract_direction(text):
         "sentido Valencia",
         "sentido Murcia",
         "sentido Algeciras",
-        "sentido ambos sentidos",
+        "ambos sentidos",
     )
 
-    for direction in directions:
-        if direction.lower() in text.lower():
-            return direction
+    text_lower = text.lower()
 
-    if "ambos sentidos" in text.lower():
-        return "Ambos sentidos"
+    for direction in directions:
+
+        if direction.lower() in text_lower:
+
+            if direction.lower() == "ambos sentidos":
+                return "Ambos sentidos"
+
+            return direction
 
     return "No disponible"
 
 
-def extract_municipality(title, text):
+# ============================================================
+# DETECCIÓN DE CORTE REAL
+# ============================================================
+
+def has_real_closure(text):
     """
-    Intenta obtener el municipio desde el título.
-    Si no es posible, devuelve No disponible.
+    Comprueba que exista una expresión que realmente indique
+    una interrupción de circulación.
     """
 
-    # Patrones habituales de titulares de la Junta.
+    for pattern in CLOSURE_PATTERNS:
+
+        if re.search(
+            pattern,
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return True
+
+    return False
+
+
+def has_real_reopening(text):
+    for pattern in REOPEN_PATTERNS:
+
+        if re.search(
+            pattern,
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return True
+
+    return False
+
+
+def relevant_blocks(soup):
+    """
+    Obtiene únicamente bloques de contenido del artículo.
+
+    NO utiliza soup.get_text() sobre toda la página porque eso
+    mezcla menús, navegación, footer, noticias relacionadas, etc.
+    """
+
+    blocks = []
+
+    for tag in soup.find_all(
+        [
+            "p",
+            "li",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+        ]
+    ):
+
+        text = normalize(
+            tag.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        if len(text) < 20:
+            continue
+
+        blocks.append(text)
+
+    return blocks
+
+
+def find_closure_context(blocks):
+    """
+    Busca el contexto donde realmente aparece el corte.
+
+    Se incluyen bloques vecinos porque algunas publicaciones
+    ponen la carretera en un párrafo y el estado del corte
+    en el siguiente.
+    """
+
+    contexts = []
+
+    for index, block in enumerate(blocks):
+
+        if not has_real_closure(block):
+            continue
+
+        start = max(0, index - 1)
+        end = min(len(blocks), index + 2)
+
+        context = " ".join(
+            blocks[start:end]
+        )
+
+        contexts.append(context)
+
+    return contexts
+
+
+# ============================================================
+# MUNICIPIO / INCENDIO
+# ============================================================
+
+def extract_municipality(title, text):
+
     patterns = [
-        r"incendio\s+(?:en|de)\s+([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]+)",
-        r"fuego\s+(?:en|de)\s+([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]+)",
+        r"\bincendio\s+(?:forestal\s+)?(?:en|de)\s+"
+        r"([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]+)",
+
+        r"\bfuego\s+(?:forestal\s+)?(?:en|de)\s+"
+        r"([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]+)",
     ]
 
     for pattern in patterns:
+
         match = re.search(
             pattern,
             title,
-            re.IGNORECASE,
+            flags=re.IGNORECASE,
         )
 
         if match:
-            value = normalize(match.group(1))
+
+            value = normalize(
+                match.group(1)
+            )
 
             value = re.split(
-                r"\s+(?:obliga|provoca|afecta|ha|y)\s+",
+                r"\s+(?:pese|provoca|afecta|obliga|ha|y|uno|una)\s+",
                 value,
                 flags=re.IGNORECASE,
             )[0]
 
-            return value.strip(" ,.-")
+            value = value.strip(
+                " ,.-"
+            )
 
+            if value:
+                return value
+
+    # Buscar municipios conocidos dentro del título/texto.
+    # Primero priorizamos los nombres de provincia/localización
+    # que aparezcan de forma razonable.
     return "No disponible"
 
 
-def extract_fire_name(title):
+def extract_fire_name(title, municipality):
+
     title = normalize(title)
 
-    match = re.search(
-        r"incendio\s+(?:en|de)\s+(.+?)(?:\s+-\s+|\s+por\s+|\s*$)",
+    # Eliminamos sufijos editoriales.
+    title = re.split(
+        r"\s+-\s+(?:Portavoz|Junta|Gobierno|Emergencias|"
+        r"Consejería|Andalucía)",
         title,
-        re.IGNORECASE,
-    )
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
 
-    if match:
-        return normalize(match.group(1))
+    patterns = [
+        r"\bincendio\s+(?:forestal\s+)?(?:en|de)\s+(.+)$",
 
-    match = re.search(
-        r"fuego\s+(?:en|de)\s+(.+?)(?:\s+-\s+|\s+por\s+|\s*$)",
-        title,
-        re.IGNORECASE,
-    )
+        r"\bfuego\s+(?:forestal\s+)?(?:en|de)\s+(.+)$",
+    ]
 
-    if match:
-        return normalize(match.group(1))
+    for pattern in patterns:
 
-    return title
+        match = re.search(
+            pattern,
+            title,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+
+            value = normalize(
+                match.group(1)
+            )
+
+            value = re.split(
+                r"\s+(?:pese|por|provoca|afecta|obliga|uno|una)\s+",
+                value,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0]
+
+            value = value.strip(
+                " ,.-"
+            )
+
+            if value:
+                return value
+
+    if municipality != "No disponible":
+        return municipality
+
+    return "Incendio forestal"
 
 
 # ============================================================
-# DETECCIÓN DE ARTÍCULOS OFICIALES
+# FUENTES DE LA JUNTA
 # ============================================================
 
 def get_candidate_articles():
-    """
-    Obtiene enlaces de publicaciones de la Junta/EMA/112
-    relacionados con incendios y emergencias.
 
-    No utiliza prensa privada.
-    """
-
-    response = get(JUNTA_SEARCH_URL)
+    response = get(
+        JUNTA_SEARCH_URL
+    )
 
     soup = BeautifulSoup(
         response.text,
@@ -343,8 +522,18 @@ def get_candidate_articles():
 
     candidates = []
 
-    for link in soup.find_all("a", href=True):
-        title = normalize(link.get_text(" ", strip=True))
+    for link in soup.find_all(
+        "a",
+        href=True,
+    ):
+
+        title = normalize(
+            link.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
         href = urljoin(
             JUNTA_BASE,
             link["href"],
@@ -353,13 +542,15 @@ def get_candidate_articles():
         if not title:
             continue
 
+        if "juntadeandalucia.es" not in href:
+            continue
+
+        # Solo usamos enlaces cuyo propio título habla
+        # de incendio/incendio forestal.
         if not contains_any(
             title,
             FIRE_KEYWORDS,
         ):
-            continue
-
-        if "juntadeandalucia.es" not in href:
             continue
 
         candidates.append(
@@ -369,125 +560,174 @@ def get_candidate_articles():
             }
         )
 
-    # Elimina duplicados
+    # Duplicados por URL.
     unique = {}
 
     for item in candidates:
         unique[item["url"]] = item
 
-    return list(unique.values())
+    return list(
+        unique.values()
+    )
 
+
+# ============================================================
+# ANALIZAR ARTÍCULO
+# ============================================================
 
 def parse_article(article):
-    """
-    Analiza una publicación oficial y determina si existe
-    una relación explícita incendio forestal -> carretera cortada.
-    """
 
-    response = get(article["url"])
+    response = get(
+        article["url"]
+    )
 
     soup = BeautifulSoup(
         response.text,
         "lxml",
     )
 
+    # MUY IMPORTANTE:
+    # usamos el título del enlace original,
+    # no soup.title, que puede contener títulos globales
+    # o metadatos de la web.
     title = normalize(
-        soup.title.get_text()
-        if soup.title
-        else article["title"]
+        article["title"]
     )
 
-    body = normalize(
-        soup.get_text(
-            " ",
-            strip=True,
-        )
+    blocks = relevant_blocks(
+        soup
     )
 
-    full_text = f"{title} {body}"
+    if not blocks:
+        return None
 
-    # Debe existir incendio.
+    article_text = " ".join(
+        blocks
+    )
+
+    # --------------------------------------------------------
+    # Debe existir un incendio REAL
+    # --------------------------------------------------------
+
     if not contains_any(
-        full_text,
+        title + " " + article_text,
         FIRE_KEYWORDS,
     ):
         return None
 
-    # Debe existir carretera/vía.
-    if not contains_any(
-        full_text,
-        ROAD_KEYWORDS,
-    ):
-        return None
+    # --------------------------------------------------------
+    # Buscar SOLO contextos donde existe un corte real
+    # --------------------------------------------------------
 
-    # Debe existir corte/restricción.
-    has_closure = contains_any(
-        full_text,
-        CLOSURE_KEYWORDS,
+    closure_contexts = find_closure_context(
+        blocks
     )
 
-    has_reopening = contains_any(
-        full_text,
-        REOPEN_KEYWORDS,
+    reopening = has_real_reopening(
+        article_text
     )
 
-    if not has_closure and not has_reopening:
-        return None
+    # --------------------------------------------------------
+    # REAPERTURA
+    # --------------------------------------------------------
 
-    province = find_province(full_text)
+    if reopening and not closure_contexts:
 
-    if province == "No disponible":
-        return None
+        province = find_province(
+            title + " " + article_text
+        )
 
-    road = extract_road(full_text)
+        municipality = extract_municipality(
+            title,
+            article_text,
+        )
 
-    if road == "No disponible":
-        return None
+        fire_name = extract_fire_name(
+            title,
+            municipality,
+        )
 
-    municipality = extract_municipality(
-        title,
-        full_text,
-    )
+        roads = extract_roads(
+            article_text
+        )
 
-    fire_name = extract_fire_name(title)
-
-    section = extract_section(full_text)
-
-    direction = extract_direction(full_text)
-
-    detected_at = datetime.now(
-        timezone.utc
-    ).isoformat()
-
-    if has_closure and not has_reopening:
-        closure_type = "Total / no especificado"
+        if not roads:
+            return None
 
         return {
             "fire": fire_name,
             "province": province,
             "municipality": municipality,
-            "road": road,
-            "section": section,
-            "direction": direction,
-            "closure_type": closure_type,
-            "detected_at": detected_at,
-            "fire_status": "Incendio forestal confirmado por fuente oficial",
-            "infoca": "Información oficial Junta/EMA/INFOCA",
-            "dgt": "Pendiente de cotejo DGT",
-            "other_sources": article["url"],
+            "road": ", ".join(roads),
+            "section": extract_section(
+                article_text
+            ),
+            "direction": extract_direction(
+                article_text
+            ),
+            "reopened_at": now_spain(),
+            "source": "Junta de Andalucía",
             "source_url": article["url"],
             "source_title": title,
         }
+
+    # --------------------------------------------------------
+    # CORTE
+    # --------------------------------------------------------
+
+    if not closure_contexts:
+        # Hay incendio pero no un corte real.
+        return None
+
+    # Unimos únicamente los contextos donde se ha detectado
+    # realmente el corte.
+    closure_text = " ".join(
+        closure_contexts
+    )
+
+    roads = extract_roads(
+        closure_text
+    )
+
+    if not roads:
+        # No podemos demostrar qué carretera está afectada.
+        return None
+
+    province = find_province(
+        closure_text + " " + title
+    )
+
+    if province == "No disponible":
+        return None
+
+    municipality = extract_municipality(
+        title,
+        closure_text,
+    )
+
+    fire_name = extract_fire_name(
+        title,
+        municipality,
+    )
 
     return {
         "fire": fire_name,
         "province": province,
         "municipality": municipality,
-        "road": road,
-        "section": section,
-        "direction": direction,
-        "reopened_at": detected_at,
-        "source": article["url"],
+        "road": ", ".join(roads),
+        "section": extract_section(
+            closure_text
+        ),
+        "direction": extract_direction(
+            closure_text
+        ),
+        "closure_type": "Corte de circulación",
+        "detected_at": now_spain(),
+        "fire_status": "Incendio forestal confirmado por Junta/INFOCA",
+        "infoca": "Junta/INFOCA",
+        "dgt": "Pendiente de cotejo DGT",
+        "other_sources": "Junta de Andalucía",
+        "source_url": article["url"],
         "source_title": title,
     }
 
@@ -497,14 +737,6 @@ def parse_article(article):
 # ============================================================
 
 def fetch_official_incidents():
-    """
-    Devuelve únicamente cortes que aparecen en publicaciones
-    oficiales de la Junta/EMA/112 y que contienen:
-
-        incendio + carretera + corte
-
-    No genera alertas por incendios sin afección viaria.
-    """
 
     incidents = []
 
@@ -514,20 +746,25 @@ def fetch_official_incidents():
         return []
 
     for article in articles:
+
         try:
-            result = parse_article(article)
+
+            result = parse_article(
+                article
+            )
 
             if not result:
                 continue
 
-            # Una reapertura no es un nuevo corte.
             if "closure_type" not in result:
                 continue
 
-            incidents.append(result)
+            incidents.append(
+                result
+            )
 
         except Exception:
-            # Una publicación problemática no debe detener
+            # Una noticia problemática no debe detener
             # toda la vigilancia.
             continue
 
@@ -535,10 +772,6 @@ def fetch_official_incidents():
 
 
 def fetch_official_reopenings():
-    """
-    Devuelve únicamente reaperturas expresamente mencionadas
-    en publicaciones oficiales.
-    """
 
     reopenings = []
 
@@ -548,8 +781,12 @@ def fetch_official_reopenings():
         return []
 
     for article in articles:
+
         try:
-            result = parse_article(article)
+
+            result = parse_article(
+                article
+            )
 
             if not result:
                 continue
@@ -557,7 +794,9 @@ def fetch_official_reopenings():
             if "reopened_at" not in result:
                 continue
 
-            reopenings.append(result)
+            reopenings.append(
+                result
+            )
 
         except Exception:
             continue
