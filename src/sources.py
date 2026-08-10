@@ -14,33 +14,25 @@ from config import ANDALUSIA_PROVINCES
 # ============================================================
 
 JUNTA_BASE = "https://www.juntadeandalucia.es"
-
 JUNTA_SEARCH_URL = (
     "https://www.juntadeandalucia.es/presidencia/portavoz/"
     "emergencias112"
 )
 
+# INFOCAR / DGT DATEX II
 DGT_URLS = (
-    "https://infocar.dgt.es/datex2/v3/dgt/"
-    "SituationPublication/incidencias.xml",
-
-    "https://nap.dgt.es/datex2/v3/dgt/"
-    "SituationPublication/datex2_v36.xml",
+    "https://infocar.dgt.es/datex2/v3/dgt/SituationPublication/incidencias.xml",
+    "https://nap.dgt.es/datex2/v3/dgt/SituationPublication/datex2_v36.xml",
 )
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 "
-        "(compatible; VigilanciaIncendiosAndalucia/4.0)"
+        "(compatible; VigilanciaIncendiosAndalucia/3.0)"
     )
 }
 
 TIMEOUT = 30
-
-
-# ============================================================
-# PALABRAS CLAVE
-# ============================================================
 
 FIRE_KEYWORDS = (
     "incendio forestal",
@@ -84,11 +76,7 @@ REOPEN_KEYWORDS = (
     "restablecido el trafico",
 )
 
-
-# ============================================================
-# PREFIJOS PROVINCIALES
-# ============================================================
-
+# Prefijos inequívocos de carreteras provinciales andaluzas.
 ROAD_PROVINCES = {
     "AL": "Almería",
     "CA": "Cádiz",
@@ -113,9 +101,7 @@ def get(url):
         headers=HEADERS,
         timeout=TIMEOUT,
     )
-
     response.raise_for_status()
-
     return response
 
 
@@ -126,7 +112,6 @@ def get(url):
 def normalize(text):
     if not text:
         return ""
-
     return re.sub(
         r"\s+",
         " ",
@@ -136,420 +121,175 @@ def normalize(text):
 
 def contains_any(text, keywords):
     text = normalize(text).lower()
-
-    return any(
-        keyword.lower() in text
-        for keyword in keywords
-    )
+    return any(keyword.lower() in text for keyword in keywords)
 
 
 def local_now():
-    return datetime.now(
-        timezone.utc
-    ).astimezone()
+    return datetime.now(timezone.utc).astimezone()
 
 
 def display_datetime():
-    return local_now().strftime(
-        "%d/%m/%Y %H:%M"
-    )
+    return local_now().strftime("%d/%m/%Y %H:%M")
 
 
 def normalize_road(value):
     value = normalize(value).upper()
-
-    value = re.sub(
-        r"\s+",
-        "",
-        value,
-    )
-
-    value = re.sub(
-        r"^([A-Z]{1,5})[- ]?(\d{1,5})$",
-        r"\1-\2",
-        value,
-    )
-
+    value = re.sub(r"\s+", "", value)
+    value = re.sub(r"^([A-Z]{1,3})[- ]?(\d{1,5})$", r"\1-\2", value)
     return value
 
 
 # ============================================================
-# DATEX II - UTILIDADES XML
+# INFOCAR / DGT DATEX II
 # ============================================================
 
-def _local_name(tag):
-    if not tag:
-        return ""
-
-    return tag.rsplit(
-        "}",
-        1,
-    )[-1].lower()
-
-
 def _tag_text(element, names):
+    """Busca el primer texto no vacío entre varios nombres de tag."""
     if element is None:
         return ""
 
-    wanted = {
-        name.lower()
-        for name in names
-    }
-
-    for child in element.iter():
-
-        if _local_name(child.tag) not in wanted:
-            continue
-
-        value = normalize(
-            "".join(
-                child.itertext()
-            )
-        )
-
-        if value:
-            return value
+    for name in names:
+        # DATEX puede venir con namespace o sin él.
+        for child in element.iter():
+            local = child.tag.rsplit("}", 1)[-1]
+            if local.lower() == name.lower():
+                value = normalize(child.text)
+                if value:
+                    return value
 
     return ""
 
 
-def _record_text(record):
-    return normalize(
-        " ".join(
-            node.text or ""
-            for node in record.iter()
-            if node.text
-        )
-    ).lower()
-
-
-# ============================================================
-# DATEX - IDENTIFICACIÓN DEL TIPO DE INCIDENCIA
-# ============================================================
-
 def _record_is_fire(record):
-    raw = _record_text(record)
-
-    type_values = " ".join(
-        str(value)
-        for node in record.iter()
-        for key, value in node.attrib.items()
-        if _local_name(key) == "type"
+    raw = ET.tostring(
+        record,
+        encoding="unicode",
     ).lower()
 
-    combined = (
-        f"{raw} {type_values}"
-    )
-
-    return bool(
-        re.search(
-            r"\bforestfire\b"
-            r"|\bseriousfire\b"
-            r"|forest fire"
-            r"|serious fire",
-            combined,
-            re.IGNORECASE,
-        )
+    return (
+        "forestfire" in raw
+        or "seriousfire" in raw
     )
 
 
 def _record_is_road_closed(record):
-    raw = _record_text(record)
-
-    type_values = " ".join(
-        str(value)
-        for node in record.iter()
-        for key, value in node.attrib.items()
-        if _local_name(key) == "type"
+    raw = ET.tostring(
+        record,
+        encoding="unicode",
     ).lower()
 
-    combined = (
-        f"{raw} {type_values}"
-    )
-
-    return bool(
-        re.search(
-            r"\broadclosed\b"
-            r"|road closed"
-            r"|closed road"
-            r"|carriageway closed",
-            combined,
-            re.IGNORECASE,
-        )
+    return (
+        "roadclosed" in raw
+        or "road closed" in raw
     )
 
 
 def _record_is_rerouting(record):
-    raw = _record_text(record)
-
-    type_values = " ".join(
-        str(value)
-        for node in record.iter()
-        for key, value in node.attrib.items()
-        if _local_name(key) == "type"
+    raw = ET.tostring(
+        record,
+        encoding="unicode",
     ).lower()
 
-    combined = (
-        f"{raw} {type_values}"
-    )
-
-    return bool(
-        re.search(
-            r"reroutingmanagement"
-            r"|alternate"
-            r"|itinerary"
-            r"|diversion"
-            r"|desvio"
-            r"|desvío"
-            r"|alternateroadorcarriagewayorlaneslayout",
-            combined,
-            re.IGNORECASE,
+    return any(
+        value in raw
+        for value in (
+            "reroutingmanagement",
+            "alternate",
+            "itinerary",
+            "diversion",
+            "desvio",
+            "desvío",
+            "alternateroadorcarriagewayorlaneslayout",
         )
     )
 
 
-# ============================================================
-# DATEX - CARRETERA
-# ============================================================
-
-def _datex_road(record):
-    value = _tag_text(
-        record,
-        (
-            "roadName",
-            "roadNumber",
-            "roadIdentifier",
-            "routeName",
-            "routeNumber",
-        ),
-    )
-
-    return normalize_road(value)
-
-
-# ============================================================
-# DATEX - PK
-# ============================================================
-
-def _clean_km(value):
-    """
-    Devuelve un PK solamente cuando el contenido representa
-    inequívocamente un valor kilométrico.
-
-    Nunca interpreta coordenadas ni textos de localización.
-    """
-
-    value = normalize(value)
-
-    if not value:
-        return ""
-
-    if re.search(
-        r"\b(?:pk|p\.k\.|km|kil[oó]metro|kil[oó]metros?)\b",
-        value,
-        re.IGNORECASE,
-    ):
-        match = re.search(
-            r"(?<!\d)"
-            r"(\d+(?:[.,]\d+)?)"
-            r"(?!\d)",
-            value,
-        )
-
-        if not match:
-            return ""
-
-        return match.group(1).replace(
-            ",",
-            ".",
-        )
-
-    # Un número puro puede ser un PK válido.
-    if re.fullmatch(
-        r"\d+(?:[.,]\d+)?",
-        value,
-    ):
-        return value.replace(
-            ",",
-            ".",
-        )
-
+def _record_type(record):
+    for key, value in record.attrib.items():
+        if key.rsplit("}", 1)[-1].lower() == "type":
+            return normalize(value)
     return ""
 
 
-def _datex_km_values(record):
-    """
-    Extrae TODOS los PK inequívocamente publicados por DATEX.
-
-    Se contemplan las distintas estructuras que hemos encontrado
-    en INFOCAR/NAP.
-
-    IMPORTANTE:
-    Los campos from/to SOLO se aceptan cuando contienen exclusivamente
-    un PK o un número puro. Así evitamos interpretar coordenadas,
-    municipios u otros valores como PK.
-    """
-
-    values = []
-
-    explicit_fields = (
-        "kilometerPoint",
-        "kilometrePoint",
-        "kilometricPoint",
-        "kilometerPointStart",
-        "kilometerPointEnd",
-        "kilometrePointStart",
-        "kilometrePointEnd",
-        "fromKilometerPoint",
-        "toKilometerPoint",
-        "fromKilometrePoint",
-        "toKilometrePoint",
-        "fromKilometricPoint",
-        "toKilometricPoint",
-        "startKilometerPoint",
-        "endKilometerPoint",
-        "startKilometrePoint",
-        "endKilometrePoint",
-        "startKm",
-        "endKm",
-        "fromPk",
-        "toPk",
-        "pk",
-    )
-
-    for name in explicit_fields:
-
-        for node in record.iter():
-
-            if _local_name(node.tag) != name.lower():
-                continue
-
-            text = normalize(
-                "".join(
-                    node.itertext()
-                )
-            )
-
-            if not text:
-                continue
-
-            value = _clean_km(text)
-
-            if not value:
-                continue
-
-            try:
-                number = float(
-                    value.replace(",", ".")
-                )
-            except ValueError:
-                continue
-
-            if 0 <= number <= 1000:
-                values.append(
-                    number
-                )
-
-    # DATEX puede utilizar from/to.
-    # Solo se admiten si son números puros o "PK X".
-    for name in (
-        "from",
-        "to",
-    ):
-
-        for node in record.iter():
-
-            if _local_name(node.tag) != name:
-                continue
-
-            text = normalize(
-                "".join(
-                    node.itertext()
-                )
-            )
-
-            if not re.fullmatch(
-                r"(?:PK\s*)?"
-                r"\d+(?:[.,]\d+)?",
-                text,
-                re.IGNORECASE,
-            ):
-                continue
-
-            value = _clean_km(text)
-
-            if not value:
-                continue
-
-            try:
-                number = float(
-                    value.replace(",", ".")
-                )
-            except ValueError:
-                continue
-
-            if 0 <= number <= 1000:
-                values.append(
-                    number
-                )
-
-    return sorted(
-        set(
-            round(
-                value,
-                6,
-            )
-            for value in values
+def _datex_road(record):
+    return normalize_road(
+        _tag_text(
+            record,
+            (
+                "roadName",
+                "roadNumber",
+                "roadIdentifier",
+            ),
         )
     )
 
 
-def _format_km_value(value):
-    text = (
-        f"{float(value):.6f}"
-        .rstrip("0")
-        .rstrip(".")
-    )
-
-    return text
-
-
-def _format_km_values(values):
-    values = sorted(
-        set(
-            round(
-                float(value),
-                6,
-            )
-            for value in values
-            if value is not None
-        )
-    )
-
-    if not values:
+def _clean_km(value):
+    """Extrae un PK solo cuando el texto parece realmente kilométrico."""
+    value = normalize(value)
+    if not value:
         return ""
 
-    if len(values) == 1:
-        return (
-            f"PK {_format_km_value(values[0])}"
-        )
+    # Evita coordenadas, nombres de municipios y descripciones de localización.
+    if not re.search(r"\b(?:pk|p\.k\.|km|kil[oó]metro|kil[oó]metros?)\b", value, re.IGNORECASE):
+        # Un valor puramente numérico puede ser un PK DATEX válido.
+        if not re.fullmatch(r"\d+(?:[.,]\d+)?", value):
+            return ""
 
-    return (
-        f"PK {_format_km_value(values[0])}"
-        f"–"
-        f"{_format_km_value(values[-1])}"
-    )
+    match = re.search(r"(?<!\d)(\d+(?:[.,]\d+)?)(?!\d)", value)
+    if not match:
+        return ""
+
+    return match.group(1).replace(",", ".")
+
+
+def _datex_km_range(record):
+    """Devuelve (desde, hasta) sin usar descripciones de localización como PK."""
+    point = _tag_text(record, (
+        "kilometerPoint", "kilometrePoint", "kilometricPoint", "pk"
+    ))
+    if point:
+        value = _clean_km(point)
+        if value:
+            return value, ""
+
+    from_km = _tag_text(record, (
+        "fromKilometerPoint", "fromKilometrePoint", "fromKilometricPoint",
+        "startKilometerPoint", "startKilometrePoint", "startKm", "fromPk",
+    ))
+    to_km = _tag_text(record, (
+        "toKilometerPoint", "toKilometrePoint", "toKilometricPoint",
+        "endKilometerPoint", "endKilometrePoint", "endKm", "toPk",
+    ))
+
+    # Algunos DATEX usan from/to, pero solo los aceptamos si contienen
+    # explícitamente PK/km o son números puros.
+    if not from_km:
+        raw = _tag_text(record, ("from",))
+        if re.fullmatch(r"\s*(?:PK\s*)?\d+(?:[.,]\d+)?\s*", raw, re.IGNORECASE):
+            from_km = raw
+
+    if not to_km:
+        raw = _tag_text(record, ("to",))
+        if re.fullmatch(r"\s*(?:PK\s*)?\d+(?:[.,]\d+)?\s*", raw, re.IGNORECASE):
+            to_km = raw
+
+    return _clean_km(from_km), _clean_km(to_km)
+
+
+def _format_km_range(record):
+    start_km, end_km = _datex_km_range(record)
+    if start_km and end_km and start_km != end_km:
+        return f"PK {start_km}–{end_km}"
+    if start_km:
+        return f"PK {start_km}"
+    if end_km:
+        return f"PK {end_km}"
+    return ""
 
 
 def _datex_km(record):
-    return _format_km_values(
-        _datex_km_values(record)
-    )
-
-
-# ============================================================
-# DATEX - SENTIDO
-# ============================================================
+    return _format_km_range(record)
 
 def _datex_direction(record):
     return _tag_text(
@@ -557,19 +297,17 @@ def _datex_direction(record):
         (
             "direction",
             "directionalFlow",
-            "directionRoad",
-            "directionOfTravel",
             "carriageway",
             "affectedCarriageway",
         ),
     )
 
 
-# ============================================================
-# DATEX - LOCALIZACIÓN
-# ============================================================
-
 def _datex_location_text(record):
+    """
+    Obtiene texto de localización sin utilizarlo como PK.
+    Sirve para cotejar el aviso DGT con INFOCA.
+    """
     values = []
 
     for name in (
@@ -579,74 +317,41 @@ def _datex_location_text(record):
         "townName",
         "administrativeAreaName",
         "roadName",
+        "from",
+        "to",
         "descriptor",
     ):
-
-        value = _tag_text(
-            record,
-            (name,),
-        )
-
+        value = _tag_text(record, (name,))
         if value and value not in values:
             values.append(value)
 
-    return normalize(
-        " ".join(values)
-    )
+    return normalize(" ".join(values))
 
-
-# ============================================================
-# DATEX - COORDENADAS
-# ============================================================
 
 def _datex_coordinates(record):
-    lat = None
-    lon = None
+    lat = ""
+    lon = ""
 
-    for node in record.iter():
+    for element in record.iter():
+        local = element.tag.rsplit("}", 1)[-1].lower()
 
-        local = _local_name(
-            node.tag
-        )
+        if local == "latitude" and not lat:
+            lat = normalize(element.text)
 
-        if local == "latitude" and lat is None:
-            try:
-                lat = float(
-                    normalize(node.text)
-                )
-            except (
-                TypeError,
-                ValueError,
-            ):
-                pass
+        if local == "longitude" and not lon:
+            lon = normalize(element.text)
 
-        if local == "longitude" and lon is None:
-            try:
-                lon = float(
-                    normalize(node.text)
-                )
-            except (
-                TypeError,
-                ValueError,
-            ):
-                pass
-
-    if lat is None or lon is None:
+    try:
+        lat_f = float(lat)
+        lon_f = float(lon)
+    except (TypeError, ValueError):
         return None, None
 
-    if not (
-        -90 <= lat <= 90
-        and
-        -180 <= lon <= 180
-    ):
+    if not (-90 <= lat_f <= 90 and -180 <= lon_f <= 180):
         return None, None
 
-    return lat, lon
+    return lat_f, lon_f
 
-
-# ============================================================
-# DATEX - IDENTIFICADORES
-# ============================================================
 
 def _datex_record_id(record):
     for key in (
@@ -654,223 +359,122 @@ def _datex_record_id(record):
         "recordId",
         "situationRecordId",
     ):
-
-        value = _tag_text(
-            record,
-            (key,),
-        )
-
+        value = _tag_text(record, (key,))
         if value:
             return value
 
     for key, value in record.attrib.items():
-
-        if _local_name(key) in (
+        if key.rsplit("}", 1)[-1].lower() in (
             "id",
             "recordid",
         ):
-
-            value = normalize(
-                value
-            )
-
-            if value:
-                return value
+            if normalize(value):
+                return normalize(value)
 
     return ""
 
 
-def _datex_situation_id(situation):
-    for key, value in situation.attrib.items():
-
-        local = _local_name(key)
-
-        if local in (
-            "id",
-            "situationid",
-            "situationnumber",
-        ):
-
-            value = normalize(
-                value
-            )
-
-            if value:
-                return value
-
-    for child in list(situation):
-
-        local = _local_name(
-            child.tag
-        )
-
-        if local in (
-            "id",
-            "situationid",
-            "situationnumber",
-        ):
-
-            value = normalize(
-                child.text
-            )
-
-            if value:
-                return value
-
-    return ""
-
-
-# ============================================================
-# PARSER DATEX
-# ============================================================
-
-def parse_datex_xml(
-    xml_text,
-    source_url,
-):
+def parse_datex_xml(xml_text, source_url):
     """
-    Extrae exclusivamente:
+    Extrae los cortes INFOCAR/DGT y conserva el identificador de la
+    ``situation`` DATEX a la que pertenece cada registro.
 
-        forestFire / seriousFire
-        +
-        roadClosed
+    Esto es importante porque una misma emergencia puede contener varios
+    ``situationRecord`` (A-493, HU-3106, HU-4103, etc.). Si uno de ellos
+    puede vincularse al incendio INFOCA, debemos poder recuperar los demás
+    registros de ESA MISMA situation, aunque sus localidades sean distintas.
 
-    Las desviaciones no generan cortes.
-
-    Conserva situation_id porque una misma emergencia DATEX
-    puede contener varias carreteras y municipios.
+    INFOCAR sigue siendo la autoridad para declarar que existe un corte.
+    INFOCA/Junta se utiliza para identificar el incendio al que pertenece.
     """
-
-    if not xml_text:
-        return []
-
     try:
-        root = ET.fromstring(
-            xml_text
-        )
+        root = ET.fromstring(xml_text)
     except ET.ParseError:
         return []
 
+    # DATEX II normalmente organiza los situationRecord dentro de
+    # <situation>. Conservamos esa relación en lugar de aplanarla.
     situations = [
-        node
-        for node in root.iter()
-        if _local_name(node.tag)
-        == "situation"
+        element
+        for element in root.iter()
+        if element.tag.rsplit("}", 1)[-1].lower() == "situation"
     ]
 
+    # Fallback por si una publicación concreta no utiliza el contenedor
+    # situation de la forma esperada.
     if not situations:
         situations = [root]
 
     results = []
     seen = set()
 
-    for index, situation in enumerate(
-        situations
-    ):
+    for situation_index, situation in enumerate(situations):
+        # IMPORTANTE: _tag_text() recorre descendientes y podría devolver el
+        # id de un situationRecord hijo. Para identificar la situation hay
+        # que mirar primero sus atributos y sus hijos directos.
+        situation_id = ""
 
-        situation_id = (
-            _datex_situation_id(
-                situation
-            )
-        )
+        for key, value in situation.attrib.items():
+            local = key.rsplit("}", 1)[-1].lower()
+            if local in ("id", "situationid", "situationnumber"):
+                if normalize(value):
+                    situation_id = normalize(value)
+                    break
 
         if not situation_id:
-            situation_id = (
-                f"container-{index}"
-            )
+            for child in list(situation):
+                local = child.tag.rsplit("}", 1)[-1].lower()
+                if local in ("id", "situationid", "situationnumber"):
+                    value = normalize(child.text)
+                    if value:
+                        situation_id = value
+                        break
+
+        if not situation_id:
+            situation_id = f"container-{situation_index}"
 
         records = [
-            node
-            for node in situation.iter()
-            if _local_name(node.tag)
+            element
+            for element in situation.iter()
+            if element.tag.rsplit("}", 1)[-1].lower()
             == "situationrecord"
         ]
 
         for record in records:
-
-            if not _record_is_fire(
-                record
-            ):
+            if not _record_is_fire(record):
                 continue
 
-            if not _record_is_road_closed(
-                record
-            ):
+            if not _record_is_road_closed(record):
                 continue
 
-            if _record_is_rerouting(
-                record
-            ):
+            if _record_is_rerouting(record):
                 continue
 
-            road = _datex_road(
-                record
-            )
-
+            road = _datex_road(record)
             if not road:
                 continue
 
-            km_values = (
-                _datex_km_values(
-                    record
-                )
-            )
+            km = _datex_km(record)
+            direction = _datex_direction(record)
+            location_text = _datex_location_text(record)
+            lat, lon = _datex_coordinates(record)
+            record_id = _datex_record_id(record)
 
-            section = (
-                _format_km_values(
-                    km_values
-                )
-            )
-
-            direction = (
-                _datex_direction(
-                    record
-                )
-            )
-
-            location_text = (
-                _datex_location_text(
-                    record
-                )
-            )
-
-            lat, lon = (
-                _datex_coordinates(
-                    record
-                )
-            )
-
-            record_id = (
-                _datex_record_id(
-                    record
-                )
-            )
-
-            unique_key = (
+            key = (
                 record_id
-                or (
-                    situation_id,
-                    road,
-                    section,
-                    direction,
-                    lat,
-                    lon,
-                )
+                or f"{road}|{km}|{lat}|{lon}|{direction}|{situation_id}"
             )
 
-            if unique_key in seen:
+            if key in seen:
                 continue
 
-            seen.add(
-                unique_key
-            )
+            seen.add(key)
 
             results.append(
                 {
                     "road": road,
-                    "section": section,
-                    "km_values": km_values,
-                    "direction": direction,
+                    "section": km or "",
+                    "direction": direction or "",
                     "location_text": location_text,
                     "lat": lat,
                     "lon": lon,
@@ -884,118 +488,44 @@ def parse_datex_xml(
     return results
 
 
-# ============================================================
-# OBTENER CORTES INFOCAR
-# ============================================================
-
 def fetch_datex_closures():
     """
-    Consulta INFOCAR y NAP.
-
-    Deduplica registros idénticos entre ambas publicaciones,
-    pero NO elimina registros con situation_id diferentes.
+    Consulta las dos publicaciones utilizadas por el script de Waze
+    y elimina duplicados entre ambas.
     """
-
     all_records = []
+    seen = set()
 
     for url in DGT_URLS:
-
         try:
             response = get(url)
-
             records = parse_datex_xml(
                 response.text,
                 url,
             )
-
         except Exception:
             continue
 
-        all_records.extend(
-            records
-        )
-
-    unique = {}
-
-    for item in all_records:
-
-        datex_id = normalize(
-            item.get(
-                "datex_id",
-                "",
-            )
-        )
-
-        if datex_id:
-
+        for item in records:
             key = (
-                "id|"
-                + datex_id.lower()
-            )
-
-        else:
-
-            key = "|".join(
-                (
-                    normalize(
-                        item.get(
-                            "road",
-                            "",
-                        )
-                    ).lower(),
-
-                    normalize(
-                        item.get(
-                            "section",
-                            "",
-                        )
-                    ).lower(),
-
-                    normalize(
-                        item.get(
-                            "direction",
-                            "",
-                        )
-                    ).lower(),
-
-                    normalize(
-                        item.get(
-                            "situation_id",
-                            "",
-                        )
-                    ).lower(),
+                item.get("datex_id")
+                or (
+                    item.get("road"),
+                    item.get("section"),
+                    item.get("lat"),
+                    item.get("lon"),
+                    item.get("direction"),
+                    item.get("situation_id"),
                 )
             )
 
-        if key not in unique:
-
-            unique[key] = item
-
-            continue
-
-        current = unique[key]
-
-        # Si las dos fuentes contienen el mismo registro,
-        # conservar cualquier información adicional.
-        for field, value in item.items():
-
-            if value in (
-                "",
-                None,
-                "No disponible",
-            ):
+            if key in seen:
                 continue
 
-            if current.get(field) in (
-                "",
-                None,
-                "No disponible",
-            ):
-                current[field] = value
+            seen.add(key)
+            all_records.append(item)
 
-    return list(
-        unique.values()
-    )
+    return all_records
 
 
 # ============================================================
@@ -1006,66 +536,53 @@ def find_province(text):
     text = normalize(text)
     lower = text.lower()
 
+    # Contexto explícito antes que una simple aparición.
+    patterns = [
+        r"provincia\s+(?:de|del)\s+"
+        r"(almer[ií]a|c[aá]diz|c[oó]rdoba|granada|huelva|ja[eé]n|m[aá]laga|sevilla)",
+        r"\((almer[ií]a|c[aá]diz|c[oó]rdoba|granada|huelva|ja[eé]n|m[aá]laga|sevilla)\)",
+        r"\ben\s+"
+        r"(almer[ií]a|c[aá]diz|c[oó]rdoba|granada|huelva|ja[eé]n|m[aá]laga|sevilla)\b",
+    ]
+
     aliases = {
         "almeria": "Almería",
         "almería": "Almería",
-        "cadiz": "Cádiz",
         "cádiz": "Cádiz",
-        "cordoba": "Córdoba",
+        "cadiz": "Cádiz",
         "córdoba": "Córdoba",
+        "cordoba": "Córdoba",
         "granada": "Granada",
         "huelva": "Huelva",
-        "jaen": "Jaén",
         "jaén": "Jaén",
-        "malaga": "Málaga",
+        "jaen": "Jaén",
         "málaga": "Málaga",
+        "malaga": "Málaga",
         "sevilla": "Sevilla",
     }
 
-    patterns = (
-        r"provincia\s+(?:de|del)\s+"
-        r"(almer[ií]a|c[aá]diz|c[oó]rdoba|granada|"
-        r"huelva|ja[eé]n|m[aá]laga|sevilla)",
-
-        r"\("
-        r"(almer[ií]a|c[aá]diz|c[oó]rdoba|granada|"
-        r"huelva|ja[eé]n|m[aá]laga|sevilla)"
-        r"\)",
-
-        r"\ben\s+"
-        r"(almer[ií]a|c[aá]diz|c[oó]rdoba|granada|"
-        r"huelva|ja[eé]n|m[aá]laga|sevilla)"
-        r"\b",
-    )
-
     for pattern in patterns:
-
         match = re.search(
             pattern,
             lower,
             re.IGNORECASE,
         )
-
         if match:
-
             return aliases.get(
                 match.group(1).lower(),
                 "No disponible",
             )
 
+    # Si solo aparece una provincia en el artículo, es razonable.
     found = []
 
     for alias, province in aliases.items():
-
         if re.search(
             rf"\b{re.escape(alias)}\b",
             lower,
         ):
-
             if province not in found:
-                found.append(
-                    province
-                )
+                found.append(province)
 
     if len(found) == 1:
         return found[0]
@@ -1073,15 +590,10 @@ def find_province(text):
     return "No disponible"
 
 
-# ============================================================
-# CARRETERAS EN TEXTO INFOCA
-# ============================================================
-
 def extract_roads(text):
     pattern = re.compile(
         r"\b("
-        r"A|AP|N|"
-        r"AL|CA|CO|GR|H|HU|J|JA|MA|SE|"
+        r"A|AP|N|AL|CA|CO|GR|H|HU|J|JA|MA|SE|"
         r"EX|CM|CR|TO"
         r")-?\s*(\d{1,5})\b",
         re.IGNORECASE,
@@ -1092,92 +604,48 @@ def extract_roads(text):
     for match in pattern.finditer(
         text or ""
     ):
-
         road = (
             f"{match.group(1).upper()}-"
             f"{match.group(2)}"
         )
 
-        road = normalize_road(
-            road
-        )
-
         if road not in roads:
-            roads.append(
-                road
-            )
+            roads.append(road)
 
     return roads
 
 
-# ============================================================
-# MUNICIPIO INFOCA
-# ============================================================
+def split_sentences(text):
+    text = normalize(text)
 
-def clean_municipality(value):
-    value = normalize(
-        value
-    )
+    if not text:
+        return []
 
-    value = re.split(
-        r"\s+(?:motiva|provoca|obliga|"
-        r"afecta|afectando|ha|y|pese\s+a|"
-        r"mientras|tras|ante)\s+",
-        value,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
-
-    return value.strip(
-        " .,:;–—-"
-    )
+    return [
+        normalize(part)
+        for part in re.split(
+            r"(?<=[.!?;])\s+|(?<=:)\s+",
+            text,
+        )
+        if normalize(part)
+    ]
 
 
-def extract_municipality(
-    title,
-    text,
-):
-    """
-    Intenta obtener el municipio del incendio.
-
-    Se da prioridad al titular y a expresiones del tipo:
-
-        incendio de Niebla
-        incendio en Niebla
-        incendio forestal de Niebla
-
-    También acepta la forma:
-
-        incendio de Niebla (Huelva)
-    """
-
-    sources = (
-        title,
-        text[:8000],
-    )
-
+def extract_municipality(title, text):
     patterns = (
-        r"incendio\s+"
-        r"(?:forestal\s+)?"
-        r"(?:de|en)\s+"
-        r"([A-ZÁÉÍÓÚÜÑ][^,.;:()–—-]{1,60})",
-
-        r"incendio\s+"
-        r"(?:forestal\s+)?"
-        r"(?:de|en)\s+"
-        r"([A-ZÁÉÍÓÚÜÑ][^,.;:–—-]{1,60})"
-        r"\s*\(",
-
-        r"fuego\s+"
-        r"(?:forestal\s+)?"
-        r"(?:de|en)\s+"
-        r"([A-ZÁÉÍÓÚÜÑ][^,.;:()–—-]{1,60})",
+        r"incendio\s+(?:forestal\s+)?"
+        r"(?:en|de)\s+"
+        r"([A-ZÁÉÍÓÚÜÑ][^,.;:–—-]{1,60})",
+        r"fuego\s+(?:forestal\s+)?"
+        r"(?:en|de)\s+"
+        r"([A-ZÁÉÍÓÚÜÑ][^,.;:–—-]{1,60})",
     )
 
-    for source in sources:
-
+    for source in (
+        title,
+        text[:5000],
+    ):
         for pattern in patterns:
-
             match = re.search(
                 pattern,
                 source,
@@ -1187,144 +655,58 @@ def extract_municipality(
             if not match:
                 continue
 
-            value = clean_municipality(
-                match.group(1)
+            value = normalize(match.group(1))
+
+            value = re.split(
+                r"\s+(?:obliga|provoca|afecta|ha|y|pese\s+a)\s+",
+                value,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0]
+
+            value = value.strip(
+                " .,:;–—-"
             )
 
-            if (
-                value
-                and
-                value.lower()
-                not in (
-                    "andalucía",
-                    "andalucia",
-                    "la provincia",
-                    "la zona",
-                )
-                and len(value) <= 60
-            ):
+            if value and len(value) <= 60:
                 return value
 
     return "No disponible"
 
 
-# ============================================================
-# NOMBRE DEL INCENDIO
-# ============================================================
+def extract_fire_name(title, municipality):
+    if municipality != "No disponible":
+        return f"Incendio de {municipality}"
 
-def extract_fire_name(
-    title,
-    text,
-    municipality,
-):
-    """
-    INFOCA es la fuente del nombre.
-
-    Prioridad:
-
-    1. Hashtag INFOCA del tipo #IIFFNiebla
-    2. Expresión "Incendio de Niebla"
-    3. Municipio identificado
-
-    No utiliza el titular periodístico completo como nombre.
-    """
-
-    full_text = (
-        f"{title} {text}"
-    )
-
-    # --------------------------------------------------------
-    # HASHTAG INFOCA
-    # --------------------------------------------------------
-
-    hashtag_pattern = re.compile(
-        r"#iiff"
-        r"([a-záéíóúüñ][a-záéíóúüñ0-9_-]*)",
-        re.IGNORECASE,
-    )
-
-    hashtags = hashtag_pattern.findall(
-        full_text
-    )
-
-    for value in hashtags:
-
-        value = normalize(
-            value
-        ).strip(
-            "_- "
-        )
-
-        if not value:
-            continue
-
-        # Normalización básica del identificador
-        # #IIFFNiebla -> Niebla
-        name = value[0].upper() + value[1:]
-
-        return (
-            f"Incendio de {name}"
-        )
-
-    # --------------------------------------------------------
-    # EXPRESIÓN EXPLÍCITA EN TEXTO
-    # --------------------------------------------------------
+    title = normalize(title)
 
     patterns = (
-        r"incendio\s+"
-        r"(?:forestal\s+)?"
-        r"(?:de|en)\s+"
-        r"([A-ZÁÉÍÓÚÜÑ][^,.;:()–—-]{1,60})",
-
-        r"fuego\s+"
-        r"(?:forestal\s+)?"
-        r"(?:de|en)\s+"
-        r"([A-ZÁÉÍÓÚÜÑ][^,.;:()–—-]{1,60})",
+        r"incendio\s+(?:forestal\s+)?"
+        r"(?:en|de)\s+"
+        r"([A-ZÁÉÍÓÚÜÑ][^,.;:–—-]{1,60})",
+        r"fuego\s+(?:forestal\s+)?"
+        r"(?:en|de)\s+"
+        r"([A-ZÁÉÍÓÚÜÑ][^,.;:–—-]{1,60})",
     )
 
     for pattern in patterns:
-
         match = re.search(
             pattern,
             title,
             re.IGNORECASE,
         )
 
-        if not match:
-            continue
-
-        value = clean_municipality(
-            match.group(1)
-        )
-
-        if value:
-            return (
-                f"Incendio de {value}"
-            )
-
-    # --------------------------------------------------------
-    # MUNICIPIO
-    # --------------------------------------------------------
-
-    if municipality != "No disponible":
-
-        return (
-            f"Incendio de {municipality}"
-        )
+        if match:
+            value = normalize(match.group(1))
+            if value:
+                return f"Incendio de {value}"
 
     return "Incendio forestal"
 
 
-# ============================================================
-# ARTÍCULOS INFOCA
-# ============================================================
-
 def get_candidate_articles():
     try:
-        response = get(
-            JUNTA_SEARCH_URL
-        )
-
+        response = get(JUNTA_SEARCH_URL)
     except Exception:
         return []
 
@@ -1339,7 +721,6 @@ def get_candidate_articles():
         "a",
         href=True,
     ):
-
         title = normalize(
             link.get_text(
                 " ",
@@ -1361,10 +742,7 @@ def get_candidate_articles():
         ):
             continue
 
-        if (
-            "juntadeandalucia.es"
-            not in href
-        ):
+        if "juntadeandalucia.es" not in href:
             continue
 
         candidates.append(
@@ -1377,21 +755,14 @@ def get_candidate_articles():
     unique = {}
 
     for item in candidates:
-        unique[
-            item["url"]
-        ] = item
+        unique[item["url"]] = item
 
-    return list(
-        unique.values()
-    )
+    return list(unique.values())
 
 
 def parse_infoca_article(article):
     try:
-        response = get(
-            article["url"]
-        )
-
+        response = get(article["url"])
     except Exception:
         return None
 
@@ -1413,9 +784,7 @@ def parse_infoca_article(article):
         )
     )
 
-    full_text = (
-        f"{title} {body}"
-    )
+    full_text = f"{title} {body}"
 
     if not contains_any(
         full_text,
@@ -1427,19 +796,14 @@ def parse_infoca_article(article):
         full_text
     )
 
-    municipality = (
-        extract_municipality(
-            title,
-            full_text,
-        )
+    municipality = extract_municipality(
+        title,
+        full_text,
     )
 
-    fire_name = (
-        extract_fire_name(
-            title,
-            full_text,
-            municipality,
-        )
+    fire_name = extract_fire_name(
+        title,
+        municipality,
     )
 
     roads = extract_roads(
@@ -1457,158 +821,53 @@ def parse_infoca_article(article):
     }
 
 
-# ============================================================
-# AGRUPAR ACTUALIZACIONES INFOCA
-# ============================================================
-
 def _fire_group_key(item):
-    """
-    Agrupa por nombre real del incendio.
+    """Agrupa actualizaciones del mismo incendio sin perder carreteras."""
+    province = normalize(item.get("province", "")).lower()
+    municipality = normalize(item.get("municipality", "")).lower()
 
-    Esto evita que dos noticias del mismo incendio,
-    con titulares diferentes, creen dos incendios.
-    """
+    if municipality and municipality != "no disponible":
+        return f"{province}|{municipality}"
 
-    fire = normalize(
-        item.get(
-            "fire",
-            "",
-        )
-    ).lower()
-
-    if fire and fire != "incendio forestal":
-        return f"fire|{fire}"
-
-    municipality = normalize(
-        item.get(
-            "municipality",
-            "",
-        )
-    ).lower()
-
-    province = normalize(
-        item.get(
-            "province",
-            "",
-        )
-    ).lower()
-
-    return (
-        f"location|"
-        f"{province}|"
-        f"{municipality}"
-    )
+    fire = normalize(item.get("fire", "")).lower()
+    return f"{province}|{fire}"
 
 
-def _merge_infoca_fire_updates(
-    items
-):
+def _merge_infoca_fire_updates(items):
+    """Fusiona artículos del mismo incendio y conserva todas sus carreteras."""
     if not items:
         return None
 
     base = sorted(
         items,
-        key=lambda item: (
-            item.get(
-                "fire",
-                ""
-            ) == "Incendio forestal",
-
-            item.get(
-                "municipality",
-                ""
-            ) == "No disponible",
+        key=lambda x: (
+            x.get("municipality") == "No disponible",
+            x.get("fire") == "Incendio forestal",
         ),
     )[0]
 
-    fire_name = base.get(
-        "fire",
-        "Incendio forestal",
-    )
-
-    province = base.get(
-        "province",
-        "No disponible",
-    )
-
-    municipality = base.get(
-        "municipality",
-        "No disponible",
-    )
-
     roads = []
     sources = []
+    province = base.get("province", "No disponible")
+    municipality = base.get("municipality", "No disponible")
+    fire_name = base.get("fire", "Incendio forestal")
 
     for item in items:
+        if province == "No disponible" and item.get("province") != "No disponible":
+            province = item.get("province")
+        if municipality == "No disponible" and item.get("municipality") != "No disponible":
+            municipality = item.get("municipality")
+        if fire_name == "Incendio forestal" and item.get("fire"):
+            fire_name = item.get("fire")
 
-        item_fire = item.get(
-            "fire",
-            "",
-        )
+        for road in item.get("roads", []):
+            road = normalize_road(road)
+            if road and road not in roads:
+                roads.append(road)
 
-        if (
-            fire_name
-            == "Incendio forestal"
-            and item_fire
-        ):
-            fire_name = item_fire
-
-        item_province = item.get(
-            "province",
-            "No disponible",
-        )
-
-        if (
-            province == "No disponible"
-            and item_province
-            != "No disponible"
-        ):
-            province = item_province
-
-        item_municipality = item.get(
-            "municipality",
-            "No disponible",
-        )
-
-        if (
-            municipality
-            == "No disponible"
-            and item_municipality
-            != "No disponible"
-        ):
-            municipality = (
-                item_municipality
-            )
-
-        for road in item.get(
-            "roads",
-            [],
-        ):
-
-            road = normalize_road(
-                road
-            )
-
-            if (
-                road
-                and road not in roads
-            ):
-                roads.append(
-                    road
-                )
-
-        source = item.get(
-            "source_url",
-            "",
-        )
-
-        if (
-            source
-            and source not in sources
-        ):
-            sources.append(
-                source
-            )
+        source = item.get("source_url", "")
+        if source and source not in sources:
+            sources.append(source)
 
     return {
         **base,
@@ -1617,58 +876,33 @@ def _merge_infoca_fire_updates(
         "municipality": municipality,
         "roads": roads,
         "source_urls": sources,
-        "source_url": (
-            sources[0]
-            if sources
-            else base.get(
-                "source_url",
-                "",
-            )
-        ),
+        "source_url": sources[0] if sources else base.get("source_url", ""),
     }
 
 
 def fetch_infoca_fires():
+    """
+    Consulta las publicaciones INFOCA/Junta y fusiona las actualizaciones
+    que corresponden al mismo incendio. Una actualización posterior que
+    mencione solo una carretera no hace desaparecer las anteriores.
+    """
     parsed = []
 
     for article in get_candidate_articles():
-
-        item = parse_infoca_article(
-            article
-        )
-
+        item = parse_infoca_article(article)
         if item:
-            parsed.append(
-                item
-            )
+            parsed.append(item)
 
     groups = {}
-
     for item in parsed:
-
-        key = _fire_group_key(
-            item
-        )
-
-        groups.setdefault(
-            key,
-            [],
-        ).append(item)
+        key = _fire_group_key(item)
+        groups.setdefault(key, []).append(item)
 
     fires = []
-
     for items in groups.values():
-
-        merged = (
-            _merge_infoca_fire_updates(
-                items
-            )
-        )
-
+        merged = _merge_infoca_fire_updates(items)
         if merged:
-            fires.append(
-                merged
-            )
+            fires.append(merged)
 
     return fires
 
@@ -1677,21 +911,9 @@ def fetch_infoca_fires():
 # VINCULACIÓN INFOCAR ↔ INFOCA
 # ============================================================
 
-def _road_belongs_to_province(
-    road,
-    province,
-):
-    """
-    SOLO sirve como información auxiliar.
-
-    IMPORTANTE:
-    NO se utiliza para excluir una carretera.
-
-    Un incendio puede propagarse a otra provincia.
-    """
-
+def _road_belongs_to_province(road, province):
     match = re.match(
-        r"^([A-Z]{1,5})-\d{1,5}$",
+        r"^([A-Z]{1,3})-\d{1,5}$",
         normalize_road(road),
     )
 
@@ -1702,627 +924,269 @@ def _road_belongs_to_province(
         match.group(1)
     )
 
-    if road_province is None:
-        return True
-
-    if province == "No disponible":
-        return True
-
     return (
-        road_province
-        == province
+        road_province is None
+        or province == "No disponible"
+        or road_province == province
     )
 
 
-def _haversine_km(
-    lat1,
-    lon1,
-    lat2,
-    lon2,
-):
-    if None in (
-        lat1,
-        lon1,
-        lat2,
-        lon2,
-    ):
+def _haversine_km(lat1, lon1, lat2, lon2):
+    """Distancia aproximada entre dos coordenadas en kilómetros."""
+    if None in (lat1, lon1, lat2, lon2):
         return None
 
-    from math import (
-        radians,
-        sin,
-        cos,
-        asin,
-        sqrt,
-    )
+    from math import radians, sin, cos, asin, sqrt
 
-    radius = 6371.0088
-
-    dlat = radians(
-        lat2 - lat1
-    )
-
-    dlon = radians(
-        lon2 - lon1
-    )
-
+    r = 6371.0088
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
     a = (
         sin(dlat / 2) ** 2
-        +
-        cos(radians(lat1))
-        *
-        cos(radians(lat2))
-        *
-        sin(dlon / 2) ** 2
+        + cos(radians(lat1))
+        * cos(radians(lat2))
+        * sin(dlon / 2) ** 2
     )
-
-    return (
-        2
-        * radius
-        * asin(
-            sqrt(a)
-        )
-    )
+    return 2 * r * asin(sqrt(a))
 
 
-def _direct_dgt_matches_fire(
-    dgt_item,
-    fire,
-):
-    """
-    Asociación directa.
+def _direct_dgt_matches_fire(dgt_item, fire):
+    road = normalize_road(dgt_item.get("road", ""))
+    province = fire.get("province", "No disponible")
 
-    Una carretera puede coincidir aunque pertenezca
-    a otra provincia.
-
-    Esto es deliberado para permitir incendios
-    que crucen límites provinciales.
-    """
-
-    road = normalize_road(
-        dgt_item.get(
-            "road",
-            "",
-        )
-    )
+    if not _road_belongs_to_province(road, province):
+        return False
 
     fire_roads = {
-        normalize_road(
-            value
-        )
-        for value in fire.get(
-            "roads",
-            [],
-        )
-        if normalize_road(
-            value
-        )
+        normalize_road(value)
+        for value in fire.get("roads", [])
+        if normalize_road(value)
     }
 
-    # Coincidencia por carretera.
-    if (
-        road
-        and road in fire_roads
-    ):
+    if road in fire_roads:
         return True
 
-    # Coincidencia por municipio.
-    location = normalize(
-        dgt_item.get(
-            "location_text",
-            "",
-        )
-    ).lower()
+    location = normalize(dgt_item.get("location_text", "")).lower()
+    municipality = normalize(fire.get("municipality", "")).lower()
 
-    municipality = normalize(
-        fire.get(
-            "municipality",
-            "",
-        )
-    ).lower()
-
-    if (
+    return bool(
         municipality
         and municipality != "no disponible"
         and municipality in location
-    ):
-        return True
-
-    return False
-
-
-def _dgt_matches_fire(
-    dgt_item,
-    fire,
-    dgt_items=None,
-):
-    """
-    Vinculación directa o por situation_id.
-
-    Si un registro de una misma situation DATEX
-    ya está vinculado al incendio, todos los demás
-    cortes forestFire + roadClosed de esa misma
-    situation pertenecen al mismo conjunto.
-    """
-
-    if _direct_dgt_matches_fire(
-        dgt_item,
-        fire,
-    ):
-        return True
-
-    situation_id = normalize(
-        dgt_item.get(
-            "situation_id",
-            "",
-        )
     )
 
-    if (
-        situation_id
-        and dgt_items
-    ):
 
-        for other in dgt_items:
-
-            if other is dgt_item:
-                continue
-
-            other_situation = normalize(
-                other.get(
-                    "situation_id",
-                    "",
-                )
-            )
-
-            if (
-                other_situation
-                != situation_id
-            ):
-                continue
-
-            if _direct_dgt_matches_fire(
-                other,
-                fire,
-            ):
-                return True
-
-    return False
-
-
-# ============================================================
-# EXPANSIÓN GEOGRÁFICA DEL INCENDIO
-# ============================================================
-
-def _expand_fire_dgt_cluster(
-    fire,
-    direct_matches,
-    dgt_items,
-):
+def _expand_fire_dgt_cluster(fire, direct_matches, dgt_items):
     """
-    Amplía el conjunto de carreteras del incendio.
+    Amplía la relación a otros cortes INFOCAR activos del mismo incendio.
 
-    PRIORIDAD:
-
-    1. Registros directamente vinculados.
-    2. Otros registros de la misma situation_id.
-    3. Proximidad geográfica a un registro ya vinculado.
-
-    IMPORTANTE:
-    NO se aplica ningún filtro provincial.
-
-    Esto permite:
-
-        Huelva -> Sevilla
-
-    cuando el incendio realmente se ha extendido.
+    Se hace de forma conservadora: mismo territorio provincial y proximidad
+    geográfica a un corte ya asociado. No basta con que sean carreteras de la
+    misma provincia.
     """
-
     if not direct_matches:
         return []
 
-    selected = list(
-        direct_matches
-    )
-
+    selected = list(direct_matches)
     selected_keys = {
-        (
-            item.get(
-                "datex_id"
-            )
-            or id(item)
-        )
+        item.get("datex_id") or id(item)
         for item in selected
     }
 
-    # --------------------------------------------------------
-    # PRIMERO: TODA LA SITUATION
-    # --------------------------------------------------------
-
-    changed = True
-
-    while changed:
-
-        changed = False
-
-        selected_situations = {
-            normalize(
-                item.get(
-                    "situation_id",
-                    "",
-                )
-            )
-            for item in selected
-            if normalize(
-                item.get(
-                    "situation_id",
-                    "",
-                )
-            )
-        }
-
-        for candidate in dgt_items:
-
-            candidate_key = (
-                candidate.get(
-                    "datex_id"
-                )
-                or id(candidate)
-            )
-
-            if candidate_key in selected_keys:
-                continue
-
-            candidate_situation = normalize(
-                candidate.get(
-                    "situation_id",
-                    "",
-                )
-            )
-
-            if (
-                candidate_situation
-                and candidate_situation
-                in selected_situations
-            ):
-
-                selected.append(
-                    candidate
-                )
-
-                selected_keys.add(
-                    candidate_key
-                )
-
-                changed = True
-
-    # --------------------------------------------------------
-    # SEGUNDO: PROXIMIDAD
-    # --------------------------------------------------------
-
+    # 35 km permite cubrir el entorno de Niebla/Valverde sin convertir toda
+    # Huelva en un único incendio. La asociación siempre parte de un corte
+    # ya vinculado directamente a INFOCA.
     radius_km = 35.0
 
     changed = True
-
     while changed:
-
         changed = False
 
         for candidate in dgt_items:
-
-            candidate_key = (
-                candidate.get(
-                    "datex_id"
-                )
-                or id(candidate)
-            )
-
+            candidate_key = candidate.get("datex_id") or id(candidate)
             if candidate_key in selected_keys:
                 continue
 
-            for anchor in selected:
+            if not _road_belongs_to_province(
+                candidate.get("road", ""),
+                fire.get("province", "No disponible"),
+            ):
+                continue
 
+            for anchor in selected:
                 distance = _haversine_km(
-                    candidate.get(
-                        "lat"
-                    ),
-                    candidate.get(
-                        "lon"
-                    ),
-                    anchor.get(
-                        "lat"
-                    ),
-                    anchor.get(
-                        "lon"
-                    ),
+                    candidate.get("lat"),
+                    candidate.get("lon"),
+                    anchor.get("lat"),
+                    anchor.get("lon"),
                 )
 
-                if (
-                    distance is not None
-                    and distance <= radius_km
-                ):
-
-                    selected.append(
-                        candidate
-                    )
-
-                    selected_keys.add(
-                        candidate_key
-                    )
-
+                if distance is not None and distance <= radius_km:
+                    selected.append(candidate)
+                    selected_keys.add(candidate_key)
                     changed = True
-
                     break
 
     return selected
 
 
-# ============================================================
-# AGRUPAR CARRETERAS
-# ============================================================
+def _dgt_matches_fire(dgt_item, fire, dgt_items=None):
+    """Asociación directa entre un corte INFOCAR y un incendio INFOCA."""
+    if _direct_dgt_matches_fire(dgt_item, fire):
+        return True
 
-def _parse_section_values(
-    section
-):
+    # Mantener la asociación por situation DATEX cuando ya existe un ancla.
+    situation_id = normalize(dgt_item.get("situation_id", ""))
+    if situation_id and dgt_items:
+        for other in dgt_items:
+            if other is dgt_item:
+                continue
+            if normalize(other.get("situation_id", "")) != situation_id:
+                continue
+            if _direct_dgt_matches_fire(other, fire):
+                return True
+
+    return False
+
+def _group_key(fire):
+    return (
+        normalize(
+            fire.get("fire", "")
+        ).lower()
+        + "|"
+        + normalize(
+            fire.get("province", "")
+        ).lower()
+        + "|"
+        + normalize(
+            fire.get("municipality", "")
+        ).lower()
+    )
+
+
+def _parse_section_values(section):
+    """
+    Extrae los valores numéricos de un campo PK ya normalizado.
+    Devuelve una lista de floats. No intenta interpretar coordenadas
+    ni textos de localización.
+    """
     if not section:
         return []
 
     values = re.findall(
-        r"(?<!\d)"
-        r"(\d+(?:[.,]\d+)?)"
-        r"(?!\d)",
+        r"(?<!\d)(\d+(?:[.,]\d+)?)(?!\d)",
         str(section),
     )
 
     result = []
-
     for value in values:
-
         try:
-            result.append(
-                float(
-                    value.replace(
-                        ",",
-                        ".",
-                    )
-                )
-            )
-
+            result.append(float(value.replace(",", ".")))
         except ValueError:
             continue
 
     return result
 
 
-def _merge_dgt_road_details(
-    dgt_items
-):
+def _format_pk_value(value):
     """
-    Agrupa por carretera.
-
-    Todos los PK disponibles de esa carretera
-    se conservan.
-
-    Ejemplo:
-
-        HU-3106 PK 2.5
-        HU-3106 PK 20.8
-
-    pasa a:
-
-        HU-3106 PK 2.5–20.8
-
-    Si solamente existe un PK:
-
-        HU-3106 PK 20.8
-
-    Si no existe información kilométrica:
-
-        HU-3106
-
-    No se fabrica ningún PK.
+    Formato limpio para PK: 31.8, 28.77, etc.
     """
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return text
 
+
+def _merge_dgt_road_details(dgt_items):
+    """
+    Agrupa TODOS los registros INFOCAR de una misma carretera.
+
+    Si INFOCAR entrega dos puntos para una carretera (por ejemplo PK 20.8
+    y PK 31.8), no los presenta como dos cortes independientes: los
+    representa como un único tramo, PK 20.8–31.8.
+
+    Si solo existe un PK, conserva ese único punto.
+    Si no existe PK, no muestra ningún PK.
+    """
     grouped = {}
 
     for item in dgt_items:
-
-        road = normalize_road(
-            item.get(
-                "road",
-                "",
-            )
-        )
-
+        road = normalize_road(item.get("road", ""))
         if not road:
             continue
 
         key = road
-
-        if key not in grouped:
-
-            grouped[key] = {
+        entry = grouped.setdefault(
+            key,
+            {
                 "road": road,
-                "direction": normalize(
-                    item.get(
-                        "direction",
-                        "",
-                    )
-                ),
+                "direction": normalize(item.get("direction", "")),
                 "pk_values": [],
-            }
-
-        entry = grouped[key]
-
-        # ----------------------------------------------------
-        # PK ESTRUCTURADO
-        # ----------------------------------------------------
-
-        for value in (
-            item.get(
-                "km_values",
-                []
-            )
-            or []
-        ):
-
-            try:
-                entry[
-                    "pk_values"
-                ].append(
-                    float(value)
-                )
-
-            except (
-                TypeError,
-                ValueError,
-            ):
-                pass
-
-        # ----------------------------------------------------
-        # PK NORMALIZADO EN SECTION
-        # ----------------------------------------------------
-
-        values = (
-            _parse_section_values(
-                item.get(
-                    "section",
-                    "",
-                )
-            )
+                "raw_sections": [],
+            },
         )
 
-        entry[
-            "pk_values"
-        ].extend(
-            values
-        )
+        section = normalize(item.get("section", ""))
+        values = _parse_section_values(section)
+
+        if values:
+            entry["pk_values"].extend(values)
 
         if not entry["direction"]:
-
-            entry[
-                "direction"
-            ] = normalize(
-                item.get(
-                    "direction",
-                    "",
-                )
+            entry["direction"] = normalize(
+                item.get("direction", "")
             )
 
     details = []
 
     for entry in grouped.values():
-
         values = sorted(
             set(
-                round(
-                    value,
-                    6,
-                )
-                for value
-                in entry[
-                    "pk_values"
-                ]
+                round(value, 6)
+                for value in entry["pk_values"]
             )
         )
 
-        section = _format_km_values(
-            values
-        )
-
-        detail = {
-            "road": entry[
-                "road"
-            ],
-            "section": section,
-            "direction": entry[
-                "direction"
-            ],
-        }
+        if len(values) >= 2:
+            start = _format_pk_value(values[0])
+            end = _format_pk_value(values[-1])
+            section = (
+                f"PK {start}–{end}"
+                if start != end
+                else f"PK {start}"
+            )
+        elif len(values) == 1:
+            section = f"PK {_format_pk_value(values[0])}"
+        else:
+            section = ""
 
         details.append(
-            detail
+            {
+                "road": entry["road"],
+                "section": section,
+                "direction": entry["direction"],
+            }
         )
 
     return details
 
 
-# ============================================================
-# CONSTRUIR INCIDENCIA FINAL
-# ============================================================
+def _merge_dgt_into_fire(fire, dgt_items):
+    """
+    Construye una única fotografía del incendio.
 
-def _merge_dgt_into_fire(
-    fire,
-    dgt_items,
-):
-    road_details = (
-        _merge_dgt_road_details(
-            dgt_items
-        )
-    )
+    Todos los registros INFOCAR pertenecientes al incendio se agrupan por
+    carretera y los PK de una misma carretera se consolidan en un único
+    tramo.
+    """
+    road_details = _merge_dgt_road_details(dgt_items)
 
     if not road_details:
         return None
 
     roads = [
         detail["road"]
-        for detail
-        in road_details
+        for detail in road_details
     ]
-
-    # --------------------------------------------------------
-    # MUNICIPIO
-    # --------------------------------------------------------
-
-    municipality = fire.get(
-        "municipality",
-        "No disponible",
-    )
-
-    if (
-        municipality
-        == "No disponible"
-    ):
-
-        for item in dgt_items:
-
-            location = normalize(
-                item.get(
-                    "location_text",
-                    "",
-                )
-            )
-
-            if not location:
-                continue
-
-            # Intento conservador:
-            # si aparece un municipio ya conocido
-            # en la localización DATEX.
-            for fire_item in (
-                [fire]
-            ):
-
-                candidate = normalize(
-                    fire_item.get(
-                        "municipality",
-                        "",
-                    )
-                )
-
-                if (
-                    candidate
-                    and candidate
-                    != "No disponible"
-                    and candidate.lower()
-                    in location.lower()
-                ):
-                    municipality = candidate
-                    break
-
-    # --------------------------------------------------------
-    # PROVINCIA
-    # --------------------------------------------------------
 
     province = fire.get(
         "province",
@@ -2330,136 +1194,37 @@ def _merge_dgt_into_fire(
     )
 
     if province == "No disponible":
-
         for item in dgt_items:
-
             road = normalize_road(
-                item.get(
-                    "road",
-                    "",
-                )
+                item.get("road", "")
             )
-
             match = re.match(
-                r"^([A-Z]{1,5})-\d{1,5}$",
+                r"^([A-Z]{1,3})-\d{1,5}$",
                 road,
             )
-
-            if not match:
-                continue
-
-            inferred = (
-                ROAD_PROVINCES.get(
+            if match:
+                inferred = ROAD_PROVINCES.get(
                     match.group(1)
                 )
-            )
-
-            if inferred:
-                province = inferred
-                break
-
-    # --------------------------------------------------------
-    # FUENTES INFOCA
-    # --------------------------------------------------------
-
-    source_urls = []
-
-    for url in (
-        fire.get(
-            "source_urls",
-            []
-        )
-        or []
-    ):
-
-        if (
-            url
-            and url not in source_urls
-        ):
-            source_urls.append(
-                url
-            )
-
-    source_url = fire.get(
-        "source_url",
-        "",
-    )
-
-    if (
-        source_url
-        and source_url not in source_urls
-    ):
-        source_urls.insert(
-            0,
-            source_url,
-        )
-
-    # --------------------------------------------------------
-    # IDs DATEX
-    # --------------------------------------------------------
-
-    datex_ids = sorted(
-        {
-            normalize(
-                item.get(
-                    "datex_id",
-                    "",
-                )
-            )
-            for item in dgt_items
-            if normalize(
-                item.get(
-                    "datex_id",
-                    "",
-                )
-            )
-        }
-    )
-
-    situation_ids = sorted(
-        {
-            normalize(
-                item.get(
-                    "situation_id",
-                    "",
-                )
-            )
-            for item in dgt_items
-            if normalize(
-                item.get(
-                    "situation_id",
-                    "",
-                )
-            )
-        }
-    )
+                if inferred:
+                    province = inferred
+                    break
 
     return {
         "fire": fire.get(
             "fire",
             "Incendio forestal",
         ),
-
         "province": province,
-
-        "municipality": municipality,
-
-        "road": ", ".join(
-            roads
+        "municipality": fire.get(
+            "municipality",
+            "No disponible",
         ),
-
-        "roads": roads,
-
+        "road": ", ".join(roads),
         "road_details": road_details,
-
         "section": "",
-
         "direction": "",
-
-        "closure_type": (
-            "Total / no especificado"
-        ),
-
+        "closure_type": "Total / no especificado",
         "detected_at": min(
             (
                 item.get(
@@ -2470,130 +1235,65 @@ def _merge_dgt_into_fire(
             ),
             default=display_datetime(),
         ),
-
-        "fire_status": (
-            "Corte confirmado"
+        "fire_status": "Corte confirmado",
+        "infoca": "Confirmado",
+        "dgt": "Confirmado",
+        "other_sources": " | ".join(
+            fire.get("source_urls", [])
+            or [fire.get("source_url", "")]
         ),
-
-        "infoca": (
-            "Confirmado"
+        "source_url": fire.get(
+            "source_url",
+            "",
         ),
-
-        "dgt": (
-            "Confirmado"
-        ),
-
-        "other_sources": (
-            " | ".join(
-                source_urls
-            )
-        ),
-
-        "source_urls": source_urls,
-
-        "source_url": (
-            source_urls[0]
-            if source_urls
-            else ""
-        ),
-
         "source_title": fire.get(
             "source_title",
             "",
         ),
-
-        "datex_ids": datex_ids,
-
-        "situation_ids": (
-            situation_ids
+        "datex_ids": [
+            item.get("datex_id", "")
+            for item in dgt_items
+            if item.get("datex_id")
+        ],
+        "situation_ids": sorted(
+            {
+                item.get("situation_id", "")
+                for item in dgt_items
+                if item.get("situation_id")
+            }
         ),
     }
 
 
 # ============================================================
-# API PRINCIPAL
+# API UTILIZADA POR main.py
 # ============================================================
 
 def fetch_official_incidents():
     """
-    DETECCIÓN DE CORTES POR INCENDIO
+    REGLA PRINCIPAL:
 
-    REGLAS DEFINITIVAS DE ESTA VERSIÓN:
-
-    1. INFOCAR/DGT debe confirmar:
-         forestFire / seriousFire
-         +
-         roadClosed
-
-    2. INFOCA/Junta identifica el incendio.
-
-    3. Una noticia INFOCA/Junta NO crea un corte por sí sola.
-
-    4. El nombre del incendio procede prioritariamente
-       del hashtag INFOCA #IIFFNombre.
-
-    5. Se conserva el municipio de INFOCA.
-
-    6. Los PK proceden de DATEX/INFOCAR.
-
-    7. Nunca se utilizan coordenadas como PK.
-
-    8. Las carreteras de otras provincias NO se descartan.
-
-       Ejemplo válido:
-
-           Incendio de Niebla (Huelva)
-           HU-3106
-           A-493
-           SE-6402
-           SE-6400
-
-       si forman parte de la misma emergencia.
-
-    9. Si varios registros DATEX pertenecen a la misma
-       situation_id, se consideran parte del mismo conjunto.
-
-    10. Las carreteras se agrupan en un único aviso.
-
-    11. Los PK de una misma carretera se consolidan.
-
-    12. INFOCAR/NAP se deduplican.
-
-    13. Se mantiene una expansión geográfica conservadora
-        de 35 km para detectar cortes adicionales del mismo
-        incendio cuando no comparten situation_id.
+    1. INFOCAR/DGT debe confirmar forestFire + roadClosed.
+    2. INFOCA/Junta debe identificar el incendio y asociarlo.
+    3. Las noticias NO crean cortes por sí mismas.
+    4. Los distintos registros DGT del mismo incendio se agrupan
+       en un único aviso.
     """
-
-    # --------------------------------------------------------
-    # 1. CORTES DGT
-    # --------------------------------------------------------
-
-    dgt_items = (
-        fetch_datex_closures()
-    )
+    dgt_items = fetch_datex_closures()
 
     if not dgt_items:
         return []
 
-    # --------------------------------------------------------
-    # 2. INCENDIOS INFOCA
-    # --------------------------------------------------------
-
-    fires = (
-        fetch_infoca_fires()
-    )
+    fires = fetch_infoca_fires()
 
     if not fires:
+        # Seguridad: no alertamos de un corte por incendio
+        # si no podemos vincularlo a un incendio INFOCA/Junta.
         return []
 
     grouped = {}
 
-    # --------------------------------------------------------
-    # 3. VINCULAR CADA INCENDIO CON INFOCAR
-    # --------------------------------------------------------
-
     for fire in fires:
-
         direct_matches = [
             item
             for item in dgt_items
@@ -2604,484 +1304,261 @@ def fetch_official_incidents():
             )
         ]
 
-        if not direct_matches:
-            continue
-
-        matched = (
-            _expand_fire_dgt_cluster(
-                fire,
-                direct_matches,
-                dgt_items,
-            )
+        matched = _expand_fire_dgt_cluster(
+            fire,
+            direct_matches,
+            dgt_items,
         )
 
         if not matched:
             continue
 
-        key = (
-            normalize(
-                fire.get(
-                    "fire",
-                    "",
-                )
-            ).lower()
-            or (
-                normalize(
-                    fire.get(
-                        "province",
-                        "",
-                    )
-                ).lower()
-                + "|"
-                + normalize(
-                    fire.get(
-                        "municipality",
-                        "",
-                    )
-                ).lower()
-            )
-        )
+        key = _group_key(fire)
 
         if key not in grouped:
-
             grouped[key] = {
                 "fire": fire,
                 "dgt": [],
             }
 
-        existing_keys = {
-            (
-                item.get(
-                    "datex_id"
-                )
-                or (
-                    item.get(
-                        "situation_id",
-                        "",
-                    ),
-                    item.get(
-                        "road",
-                        "",
-                    ),
-                    item.get(
-                        "section",
-                        "",
-                    ),
-                    item.get(
-                        "lat"
-                    ),
-                    item.get(
-                        "lon"
-                    ),
-                )
-            )
-            for item
-            in grouped[key]["dgt"]
+        existing_ids = {
+            item.get("datex_id")
+            for item in grouped[key]["dgt"]
+            if item.get("datex_id")
         }
 
         for item in matched:
+            item_id = item.get("datex_id")
 
-            item_key = (
-                item.get(
-                    "datex_id"
-                )
-                or (
-                    item.get(
-                        "situation_id",
-                        "",
-                    ),
-                    item.get(
-                        "road",
-                        "",
-                    ),
-                    item.get(
-                        "section",
-                        "",
-                    ),
-                    item.get(
-                        "lat"
-                    ),
-                    item.get(
-                        "lon"
-                    ),
-                )
-            )
-
-            if item_key in existing_keys:
+            if item_id and item_id in existing_ids:
                 continue
 
-            grouped[key]["dgt"].append(
-                item
-            )
-
-            existing_keys.add(
-                item_key
-            )
-
-    # --------------------------------------------------------
-    # 4. CONSTRUIR AVISOS ÚNICOS
-    # --------------------------------------------------------
+            grouped[key]["dgt"].append(item)
 
     incidents = []
 
     for group in grouped.values():
-
-        incident = (
-            _merge_dgt_into_fire(
-                group["fire"],
-                group["dgt"],
-            )
+        item = _merge_dgt_into_fire(
+            group["fire"],
+            group["dgt"],
         )
 
-        if incident:
-            incidents.append(
-                incident
-            )
+        if item:
+            incidents.append(item)
 
     return incidents
 
 
-# ============================================================
-# REAPERTURAS
-# ============================================================
-#
-# NO MODIFICAMOS TODAVÍA LA LÓGICA DE REAPERTURA.
-#
-# La fase actual queda centrada exclusivamente en dejar
-# PERFECTAMENTE RESUELTA la detección y agrupación de cortes.
-#
-# ============================================================
+def _road_is_active_in_infocar(road, active_dgt):
+    """True si INFOCAR sigue mostrando esa carretera como cortada."""
+    target = normalize_road(road)
+    if not target:
+        return False
 
-def fetch_official_reopenings(state, detected):
-    """
-    Detecta reaperturas comparando la fotografía anterior almacenada
-    con la fotografía actual de INFOCAR.
-
-    REGLA PRINCIPAL:
-
-    - INFOCAR es la fuente de verdad para el estado de la carretera.
-    - Si una carretera estaba cerrada en la ejecución anterior y ya NO
-      aparece en la fotografía actual de INFOCAR, se considera reabierta.
-    - Si continúa sin aparecer, no se vuelve a notificar.
-    - Si vuelve a aparecer posteriormente, se considerará un nuevo cierre.
-    - Las noticias de Junta/INFOCA NO generan reaperturas por sí mismas.
-    """
-
-    reopenings = []
-
-    incidents = state.get(
-        "incidents",
-        {}
+    return any(
+        normalize_road(item.get("road", "")) == target
+        for item in active_dgt
     )
 
-    if not detected:
-        # Si INFOCAR no devuelve datos, NO podemos interpretar
-        # una respuesta vacía como reapertura.
-        #
-        # Esto es importante para evitar falsos positivos si existe
-        # un fallo temporal de conexión o del feed.
-        return []
 
-    # ------------------------------------------------------------
-    # FOTOGRAFÍA ACTUAL DE CARRETERAS
-    # ------------------------------------------------------------
+def _fetch_datex_closures_with_status():
+    """
+    Igual que ``fetch_datex_closures()``, pero devuelve además si al menos
+    una de las publicaciones DATEX se ha consultado correctamente.
 
-    current_by_fire = {}
+    Esto es imprescindible para las reaperturas: una respuesta vacía por
+    un fallo de red NO puede interpretarse como que todas las carreteras
+    han reabierto.
+    """
+    all_records = []
+    seen = set()
+    successful_sources = 0
 
-    for item in detected:
-
-        fire_key = _group_key(
-            {
-                "fire": item.get("fire", ""),
-                "province": item.get("province", ""),
-                "municipality": item.get(
-                    "municipality",
-                    "",
-                ),
-            }
-        )
-
-        roads = current_by_fire.setdefault(
-            fire_key,
-            {}
-        )
-
-        road_details = item.get(
-            "road_details",
-            []
-        )
-
-        if not road_details:
-            # Compatibilidad con la estructura actual.
-            road_text = normalize(
-                item.get(
-                    "road",
-                    "",
-                )
+    for url in DGT_URLS:
+        try:
+            response = get(url)
+            records = parse_datex_xml(
+                response.text,
+                url,
             )
-
-            if road_text:
-                for road in road_text.split(","):
-                    road = normalize_road(road)
-
-                    if road:
-                        roads[road] = {
-                            "road": road,
-                            "section": normalize(
-                                item.get(
-                                    "section",
-                                    "",
-                                )
-                            ),
-                            "direction": normalize(
-                                item.get(
-                                    "direction",
-                                    "",
-                                )
-                            ),
-                        }
-
+            successful_sources += 1
+        except Exception:
             continue
 
-        for detail in road_details:
-
-            road = normalize_road(
-                detail.get(
-                    "road",
-                    "",
+        for item in records:
+            key = (
+                item.get("datex_id")
+                or (
+                    item.get("road"),
+                    item.get("section"),
+                    item.get("lat"),
+                    item.get("lon"),
+                    item.get("direction"),
+                    item.get("situation_id"),
                 )
             )
 
+            if key in seen:
+                continue
+
+            seen.add(key)
+            all_records.append(item)
+
+    return all_records, successful_sources > 0
+
+
+def _previous_active_roads(state):
+    """
+    Extrae las carreteras que figuraban como activas en la última ejecución
+    guardada. Conserva también sus PK para poder informar de la reapertura.
+    """
+    result = []
+    incidents = state.get("incidents", {}) if isinstance(state, dict) else {}
+
+    for current in incidents.values():
+        if not isinstance(current, dict):
+            continue
+
+        fire = current.get("fire", "Incendio forestal")
+        province = current.get("province", "No disponible")
+        municipality = current.get("municipality", "No disponible")
+
+        details = current.get("road_details")
+
+        if not isinstance(details, list):
+            road_text = current.get("road", "")
+            details = [
+                {
+                    "road": road.strip(),
+                    "section": current.get("section", ""),
+                    "direction": current.get("direction", ""),
+                }
+                for road in str(road_text).split(",")
+                if road.strip()
+            ]
+
+        for detail in details:
+            if not isinstance(detail, dict):
+                continue
+
+            road = normalize_road(detail.get("road", ""))
             if not road:
                 continue
 
-            roads[road] = {
-                "road": road,
-                "section": normalize(
-                    detail.get(
-                        "section",
-                        "",
-                    )
-                ),
-                "direction": normalize(
-                    detail.get(
-                        "direction",
-                        "",
-                    )
-                ),
-            }
-
-    # ------------------------------------------------------------
-    # COMPARACIÓN CON LA FOTOGRAFÍA ANTERIOR
-    # ------------------------------------------------------------
-
-    for key, previous in incidents.items():
-
-        previous_fire = normalize(
-            previous.get(
-                "fire",
-                "",
-            )
-        )
-
-        previous_province = normalize(
-            previous.get(
-                "province",
-                "",
-            )
-        )
-
-        previous_municipality = normalize(
-            previous.get(
-                "municipality",
-                "",
-            )
-        )
-
-        # Necesitamos identificar el incendio anterior.
-        fire_key = _group_key(
-            {
-                "fire": previous_fire,
-                "province": previous_province,
-                "municipality": previous_municipality,
-            }
-        )
-
-        current_roads = current_by_fire.get(
-            fire_key,
-            {}
-        )
-
-        # --------------------------------------------------------
-        # CARRETERAS ANTERIORMENTE CORTADAS
-        # --------------------------------------------------------
-
-        previous_details = previous.get(
-            "road_details",
-            []
-        )
-
-        # Compatibilidad con estados antiguos.
-        if not previous_details:
-
-            previous_road_text = normalize(
-                previous.get(
-                    "road",
-                    "",
-                )
-            )
-
-            if previous_road_text:
-                previous_details = []
-
-                for road in previous_road_text.split(","):
-
-                    road = normalize_road(
-                        road
-                    )
-
-                    if not road:
-                        continue
-
-                    previous_details.append(
-                        {
-                            "road": road,
-                            "section": normalize(
-                                previous.get(
-                                    "section",
-                                    "",
-                                )
-                            ),
-                            "direction": normalize(
-                                previous.get(
-                                    "direction",
-                                    "",
-                                )
-                            ),
-                        }
-                    )
-
-        for previous_detail in previous_details:
-
-            previous_road = normalize_road(
-                previous_detail.get(
-                    "road",
-                    "",
-                )
-            )
-
-            if not previous_road:
-                continue
-
-            # La carretera sigue apareciendo en INFOCAR.
-            if previous_road in current_roads:
-                continue
-
-            # ----------------------------------------------------
-            # LA CARRETERA HA DESAPARECIDO DE INFOCAR
-            # ----------------------------------------------------
-            #
-            # Solo consideramos reapertura si el incendio sigue
-            # existiendo en la fotografía actual.
-            #
-            # Si no aparece ninguna carretera del incendio actual,
-            # no interpretamos eso automáticamente como reapertura:
-            # podría tratarse de una incidencia temporal del feed.
-            # ----------------------------------------------------
-
-            if not current_roads:
-                continue
-
-            previous_section = normalize(
-                previous_detail.get(
-                    "section",
-                    "",
-                )
-            )
-
-            previous_direction = normalize(
-                previous_detail.get(
-                    "direction",
-                    "",
-                )
-            )
-
-            reopenings.append(
+            result.append(
                 {
-                    "fire": previous_fire
-                    or "Incendio forestal",
-
-                    "province": previous_province
-                    or "No disponible",
-
-                    "municipality": previous_municipality
-                    or "No disponible",
-
-                    "road": previous_road,
-
-                    # Conservamos el PK que tenía el corte.
-                    "section": previous_section,
-
-                    "direction": previous_direction,
-
-                    "reopened_at": display_datetime(),
-
-                    "source": (
-                        "https://infocar.dgt.es/datex2/v3/"
-                        "dgt/SituationPublication/incidencias.xml"
-                    ),
-
-                    "source_title": (
-                        "INFOCAR/DGT DATEX II — "
-                        "carretera desaparecida "
-                        "del feed activo"
-                    ),
+                    "fire": fire,
+                    "province": province,
+                    "municipality": municipality,
+                    "road": road,
+                    "section": normalize(detail.get("section", "")),
+                    "direction": normalize(detail.get("direction", "")),
                 }
             )
 
-    # ------------------------------------------------------------
-    # DEDUPLICACIÓN
-    # ------------------------------------------------------------
+    return result
 
-    unique = {}
 
-    for item in reopenings:
+def _current_incident_roads(current_incidents):
+    """Devuelve el conjunto de carreteras que siguen activas ahora."""
+    roads = set()
 
-        key = "|".join(
-            (
-                normalize(
-                    item.get(
-                        "fire",
-                        "",
-                    )
-                ).lower(),
+    for item in current_incidents or []:
+        details = item.get("road_details")
 
-                normalize(
-                    item.get(
-                        "province",
-                        "",
-                    )
-                ).lower(),
+        if isinstance(details, list):
+            for detail in details:
+                if isinstance(detail, dict):
+                    road = normalize_road(detail.get("road", ""))
+                    if road:
+                        roads.add(road)
+            continue
 
-                normalize(
-                    item.get(
-                        "municipality",
-                        "",
-                    )
-                ).lower(),
+        for value in str(item.get("road", "")).split(","):
+            road = normalize_road(value)
+            if road:
+                roads.add(road)
 
-                normalize(
-                    item.get(
-                        "road",
-                        "",
-                    )
-                ).lower(),
-            )
+    return roads
+
+
+def fetch_official_reopenings(previous_state=None, current_incidents=None):
+    """
+    Detecta reaperturas mediante la desaparición de una carretera del
+    INFOCAR/DGT entre dos ejecuciones consecutivas.
+
+    REGLAS:
+      1. INFOCAR/DGT es la fuente de verdad para el estado del corte.
+      2. La carretera debe haber estado activa en el estado anterior.
+      3. INFOCAR debe haberse consultado correctamente.
+      4. Si la carretera sigue apareciendo en INFOCAR, NO hay reapertura.
+      5. Si vuelve a aparecer posteriormente, se considera un nuevo corte.
+      6. Las noticias de INFOCA/Junta NO crean ni confirman la reapertura.
+
+    No se exige que el incendio completo desaparezca: basta con que una
+    carretera concreta deje de aparecer.
+    """
+    if not isinstance(previous_state, dict):
+        return []
+
+    previous_roads = _previous_active_roads(previous_state)
+    if not previous_roads:
+        return []
+
+    active_dgt, dgt_ok = _fetch_datex_closures_with_status()
+
+    # Si INFOCAR no pudo consultarse, no podemos interpretar una ausencia
+    # como reapertura. Esto evita falsos positivos por errores de red.
+    if not dgt_ok:
+        return []
+
+    active_roads = {
+        normalize_road(item.get("road", ""))
+        for item in active_dgt
+        if normalize_road(item.get("road", ""))
+    }
+
+    # current_incidents es la fotografía ya vinculada INFOCAR + INFOCA.
+    # Se usa como segunda comprobación para no marcar como reabierta una
+    # carretera que sigue presente aunque haya cambiado de agrupación.
+    current_roads = _current_incident_roads(current_incidents or [])
+
+    reopenings = []
+    seen = set()
+
+    for previous in previous_roads:
+        road = normalize_road(previous.get("road", ""))
+        if not road:
+            continue
+
+        if road in active_roads or road in current_roads:
+            continue
+
+        key = (
+            normalize(previous.get("fire", "")).lower(),
+            normalize(previous.get("province", "")).lower(),
+            normalize(previous.get("municipality", "")).lower(),
+            road,
         )
 
-        if key not in unique:
-            unique[key] = item
+        if key in seen:
+            continue
 
-    return list(
-        unique.values()
-    )
+        seen.add(key)
+
+        reopenings.append(
+            {
+                "fire": previous.get("fire", "Incendio forestal"),
+                "province": previous.get("province", "No disponible"),
+                "municipality": previous.get("municipality", "No disponible"),
+                "road": road,
+                "section": previous.get("section", ""),
+                "direction": previous.get("direction", ""),
+                "reopened_at": display_datetime(),
+                "source": DGT_URLS[0],
+                "source_title": "INFOCAR/DGT DATEX II",
+            }
+        )
+
+    return reopenings
+
