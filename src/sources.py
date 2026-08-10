@@ -2752,5 +2752,336 @@ def fetch_official_incidents():
 #
 # ============================================================
 
-def fetch_official_reopenings():
-    return []
+def fetch_official_reopenings(state, detected):
+    """
+    Detecta reaperturas comparando la fotografía anterior almacenada
+    con la fotografía actual de INFOCAR.
+
+    REGLA PRINCIPAL:
+
+    - INFOCAR es la fuente de verdad para el estado de la carretera.
+    - Si una carretera estaba cerrada en la ejecución anterior y ya NO
+      aparece en la fotografía actual de INFOCAR, se considera reabierta.
+    - Si continúa sin aparecer, no se vuelve a notificar.
+    - Si vuelve a aparecer posteriormente, se considerará un nuevo cierre.
+    - Las noticias de Junta/INFOCA NO generan reaperturas por sí mismas.
+    """
+
+    reopenings = []
+
+    incidents = state.get(
+        "incidents",
+        {}
+    )
+
+    if not detected:
+        # Si INFOCAR no devuelve datos, NO podemos interpretar
+        # una respuesta vacía como reapertura.
+        #
+        # Esto es importante para evitar falsos positivos si existe
+        # un fallo temporal de conexión o del feed.
+        return []
+
+    # ------------------------------------------------------------
+    # FOTOGRAFÍA ACTUAL DE CARRETERAS
+    # ------------------------------------------------------------
+
+    current_by_fire = {}
+
+    for item in detected:
+
+        fire_key = _group_key(
+            {
+                "fire": item.get("fire", ""),
+                "province": item.get("province", ""),
+                "municipality": item.get(
+                    "municipality",
+                    "",
+                ),
+            }
+        )
+
+        roads = current_by_fire.setdefault(
+            fire_key,
+            {}
+        )
+
+        road_details = item.get(
+            "road_details",
+            []
+        )
+
+        if not road_details:
+            # Compatibilidad con la estructura actual.
+            road_text = normalize(
+                item.get(
+                    "road",
+                    "",
+                )
+            )
+
+            if road_text:
+                for road in road_text.split(","):
+                    road = normalize_road(road)
+
+                    if road:
+                        roads[road] = {
+                            "road": road,
+                            "section": normalize(
+                                item.get(
+                                    "section",
+                                    "",
+                                )
+                            ),
+                            "direction": normalize(
+                                item.get(
+                                    "direction",
+                                    "",
+                                )
+                            ),
+                        }
+
+            continue
+
+        for detail in road_details:
+
+            road = normalize_road(
+                detail.get(
+                    "road",
+                    "",
+                )
+            )
+
+            if not road:
+                continue
+
+            roads[road] = {
+                "road": road,
+                "section": normalize(
+                    detail.get(
+                        "section",
+                        "",
+                    )
+                ),
+                "direction": normalize(
+                    detail.get(
+                        "direction",
+                        "",
+                    )
+                ),
+            }
+
+    # ------------------------------------------------------------
+    # COMPARACIÓN CON LA FOTOGRAFÍA ANTERIOR
+    # ------------------------------------------------------------
+
+    for key, previous in incidents.items():
+
+        previous_fire = normalize(
+            previous.get(
+                "fire",
+                "",
+            )
+        )
+
+        previous_province = normalize(
+            previous.get(
+                "province",
+                "",
+            )
+        )
+
+        previous_municipality = normalize(
+            previous.get(
+                "municipality",
+                "",
+            )
+        )
+
+        # Necesitamos identificar el incendio anterior.
+        fire_key = _group_key(
+            {
+                "fire": previous_fire,
+                "province": previous_province,
+                "municipality": previous_municipality,
+            }
+        )
+
+        current_roads = current_by_fire.get(
+            fire_key,
+            {}
+        )
+
+        # --------------------------------------------------------
+        # CARRETERAS ANTERIORMENTE CORTADAS
+        # --------------------------------------------------------
+
+        previous_details = previous.get(
+            "road_details",
+            []
+        )
+
+        # Compatibilidad con estados antiguos.
+        if not previous_details:
+
+            previous_road_text = normalize(
+                previous.get(
+                    "road",
+                    "",
+                )
+            )
+
+            if previous_road_text:
+                previous_details = []
+
+                for road in previous_road_text.split(","):
+
+                    road = normalize_road(
+                        road
+                    )
+
+                    if not road:
+                        continue
+
+                    previous_details.append(
+                        {
+                            "road": road,
+                            "section": normalize(
+                                previous.get(
+                                    "section",
+                                    "",
+                                )
+                            ),
+                            "direction": normalize(
+                                previous.get(
+                                    "direction",
+                                    "",
+                                )
+                            ),
+                        }
+                    )
+
+        for previous_detail in previous_details:
+
+            previous_road = normalize_road(
+                previous_detail.get(
+                    "road",
+                    "",
+                )
+            )
+
+            if not previous_road:
+                continue
+
+            # La carretera sigue apareciendo en INFOCAR.
+            if previous_road in current_roads:
+                continue
+
+            # ----------------------------------------------------
+            # LA CARRETERA HA DESAPARECIDO DE INFOCAR
+            # ----------------------------------------------------
+            #
+            # Solo consideramos reapertura si el incendio sigue
+            # existiendo en la fotografía actual.
+            #
+            # Si no aparece ninguna carretera del incendio actual,
+            # no interpretamos eso automáticamente como reapertura:
+            # podría tratarse de una incidencia temporal del feed.
+            # ----------------------------------------------------
+
+            if not current_roads:
+                continue
+
+            previous_section = normalize(
+                previous_detail.get(
+                    "section",
+                    "",
+                )
+            )
+
+            previous_direction = normalize(
+                previous_detail.get(
+                    "direction",
+                    "",
+                )
+            )
+
+            reopenings.append(
+                {
+                    "fire": previous_fire
+                    or "Incendio forestal",
+
+                    "province": previous_province
+                    or "No disponible",
+
+                    "municipality": previous_municipality
+                    or "No disponible",
+
+                    "road": previous_road,
+
+                    # Conservamos el PK que tenía el corte.
+                    "section": previous_section,
+
+                    "direction": previous_direction,
+
+                    "reopened_at": display_datetime(),
+
+                    "source": (
+                        "https://infocar.dgt.es/datex2/v3/"
+                        "dgt/SituationPublication/incidencias.xml"
+                    ),
+
+                    "source_title": (
+                        "INFOCAR/DGT DATEX II — "
+                        "carretera desaparecida "
+                        "del feed activo"
+                    ),
+                }
+            )
+
+    # ------------------------------------------------------------
+    # DEDUPLICACIÓN
+    # ------------------------------------------------------------
+
+    unique = {}
+
+    for item in reopenings:
+
+        key = "|".join(
+            (
+                normalize(
+                    item.get(
+                        "fire",
+                        "",
+                    )
+                ).lower(),
+
+                normalize(
+                    item.get(
+                        "province",
+                        "",
+                    )
+                ).lower(),
+
+                normalize(
+                    item.get(
+                        "municipality",
+                        "",
+                    )
+                ).lower(),
+
+                normalize(
+                    item.get(
+                        "road",
+                        "",
+                    )
+                ).lower(),
+            )
+        )
+
+        if key not in unique:
+            unique[key] = item
+
+    return list(
+        unique.values()
+    )
