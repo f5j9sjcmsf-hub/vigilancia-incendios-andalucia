@@ -84,7 +84,7 @@ def _telegram_diagnostics(state):
     pero el bot no responde. Nunca imprime el token completo.
     """
     print("=" * 60)
-    print("DIAGNÓSTICO TELEGRAM v13")
+    print("DIAGNÓSTICO TELEGRAM v15")
     print("=" * 60)
 
     print(f"[TELEGRAM] Token disponible: {'SÍ' if TELEGRAM_BOT_TOKEN else 'NO'}")
@@ -174,13 +174,31 @@ def _send_control_message(text):
     if not TELEGRAM_API or not TELEGRAM_CHAT_ID:
         return
 
+    # Usamos botones INLINE para que aparezcan directamente debajo del
+    # mensaje y no dependan del teclado de Telegram.
     keyboard = {
-        "keyboard": [
-            ["▶️ Iniciar vigilancia", "🔄 Reiniciar desde 0"],
-            ["📊 Estado", "⏹️ Pausar vigilancia"],
-        ],
-        "resize_keyboard": True,
-        "is_persistent": True,
+        "inline_keyboard": [
+            [
+                {
+                    "text": "▶️ Iniciar vigilancia",
+                    "callback_data": "iniciar",
+                },
+                {
+                    "text": "🔄 Reiniciar desde 0",
+                    "callback_data": "reiniciar",
+                },
+            ],
+            [
+                {
+                    "text": "📊 Estado",
+                    "callback_data": "estado",
+                },
+                {
+                    "text": "⏹️ Pausar vigilancia",
+                    "callback_data": "pausar",
+                },
+            ],
+        ]
     }
 
     _telegram_request(
@@ -205,16 +223,15 @@ def _poll_commands(state):
     """
     Lee las órdenes pendientes del chat configurado.
 
-    GitHub Actions ejecuta este código cada 30 minutos, por lo que una
-    pulsación del botón se procesa en la siguiente ejecución del workflow
-    (o inmediatamente si se fuerza manualmente el workflow).
+    Acepta tanto comandos escritos (/start, /estado, etc.) como pulsaciones
+    de botones inline (callback_query).
     """
     if not TELEGRAM_API or not TELEGRAM_CHAT_ID:
         return None
 
     offset = state.get("telegram_update_offset")
     payload = {
-        "allowed_updates": ["message"],
+        "allowed_updates": ["message", "callback_query"],
         "timeout": 1,
     }
 
@@ -236,6 +253,31 @@ def _poll_commands(state):
         if isinstance(update_id, int):
             state["telegram_update_offset"] = update_id + 1
 
+        # 1. Botones inline
+        callback = update.get("callback_query") or {}
+        if callback:
+            callback_data = str(callback.get("data") or "").strip()
+            callback_message = callback.get("message") or {}
+            callback_chat = callback_message.get("chat") or {}
+            callback_chat_id = callback_chat.get("id")
+
+            if not _authorized_chat(callback_chat_id):
+                continue
+
+            if callback_data in {"iniciar", "reiniciar", "estado", "pausar"}:
+                command = callback_data
+
+                callback_id = callback.get("id")
+                if callback_id:
+                    _telegram_request(
+                        "answerCallbackQuery",
+                        {
+                            "callback_query_id": callback_id,
+                        },
+                    )
+                continue
+
+        # 2. Comandos escritos
         message = update.get("message") or {}
         chat = message.get("chat") or {}
         if not _authorized_chat(chat.get("id")):
@@ -248,10 +290,6 @@ def _poll_commands(state):
             if normalized == label.lower():
                 command = value
                 break
-
-        if command:
-            # Si llegan varias órdenes en una ejecución, procesamos la última.
-            continue
 
     return command
 
