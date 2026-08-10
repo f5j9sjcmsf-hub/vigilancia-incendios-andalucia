@@ -393,23 +393,82 @@ def _reopening_key(item):
 
 
 def process_reopenings(state, reopenings):
+    """
+    Procesa las reaperturas detectadas por comparación de fotografías
+    de INFOCAR.
+
+    Cada carretera desaparecida de INFOCAR se trata individualmente.
+
+    Una vez notificada una reapertura, queda marcada como abierta para
+    evitar repetir el aviso mientras siga ausente del feed.
+    """
+
     alerts = []
-    incidents = state.setdefault("incidents", {})
+
+    incidents = state.setdefault(
+        "incidents",
+        {}
+    )
 
     for item in reopenings:
-        # Busca el incendio existente sin depender de la carretera,
-        # porque el aviso activo puede contener varias.
-        fire = _clean(item.get("fire")).lower()
-        province = _clean(item.get("province")).lower()
-        municipality = _clean(item.get("municipality")).lower()
+
+        fire = _clean(
+            item.get(
+                "fire"
+            )
+        ).lower()
+
+        province = _clean(
+            item.get(
+                "province"
+            )
+        ).lower()
+
+        municipality = _clean(
+            item.get(
+                "municipality"
+            )
+        ).lower()
+
+        road = _clean(
+            item.get(
+                "road"
+            )
+        )
+
+        if not road:
+            continue
+
+        # --------------------------------------------------------
+        # LOCALIZAR EL INCENDIO
+        # --------------------------------------------------------
 
         matching_key = None
 
         for key, current in incidents.items():
+
+            current_fire = _clean(
+                current.get(
+                    "fire"
+                )
+            ).lower()
+
+            current_province = _clean(
+                current.get(
+                    "province"
+                )
+            ).lower()
+
+            current_municipality = _clean(
+                current.get(
+                    "municipality"
+                )
+            ).lower()
+
             if (
-                _clean(current.get("fire")).lower() == fire
-                and _clean(current.get("province")).lower() == province
-                and _clean(current.get("municipality")).lower() == municipality
+                current_fire == fire
+                and current_province == province
+                and current_municipality == municipality
             ):
                 matching_key = key
                 break
@@ -417,29 +476,50 @@ def process_reopenings(state, reopenings):
         if matching_key is None:
             continue
 
-        current = incidents[matching_key]
+        current = incidents[
+            matching_key
+        ]
 
-        road = _clean(item.get("road"))
-        active_roads = {
-            _clean(detail.get("road")).lower()
-            for detail in _road_details(current)
+        road_key = road.lower()
+
+        # --------------------------------------------------------
+        # EVITAR DUPLICADOS
+        # --------------------------------------------------------
+
+        reopened_roads = current.setdefault(
+            "reopened_roads",
+            []
+        )
+
+        reopened_roads_normalized = {
+            _clean(value).lower()
+            for value in reopened_roads
         }
 
-        # Nunca notificamos una reapertura de una carretera que todavía
-        # figura como activa en el estado almacenado.
-        if road and road.lower() in active_roads:
+        # Si ya notificamos esta reapertura y la carretera continúa
+        # fuera de INFOCAR, no volvemos a avisar.
+        if road_key in reopened_roads_normalized:
             continue
 
-        reopen_key = _reopening_key(item)
+        # --------------------------------------------------------
+        # REGISTRAR REAPERTURA
+        # --------------------------------------------------------
 
-        if current.get("last_reopening_key") == reopen_key:
-            continue
+        reopened_roads.append(
+            road
+        )
 
-        current["last_reopening_key"] = reopen_key
+        current["last_reopening_key"] = (
+            f"{fire}|{province}|"
+            f"{municipality}|{road_key}"
+        )
+
         current["road_open"] = True
 
         alerts.append(
-            format_reopening(item)
+            format_reopening(
+                item
+            )
         )
 
     return alerts
