@@ -2,23 +2,20 @@ name: Vigilancia Andalucía
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/30 * * * *"
 
 permissions:
   contents: write
+
+env:
+  TZ: Europe/Madrid
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
 jobs:
   vigilancia:
     runs-on: ubuntu-latest
 
-    env:
-      TZ: Europe/Madrid
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
     steps:
-
       - name: Descargar repositorio
         uses: actions/checkout@v4
         with:
@@ -32,17 +29,26 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
-      - name: Ejecutar vigilancia
+      - name: Ejecutar vigilancia v16
         working-directory: src
-        run: python main.py
-
-      - name: Guardar estado
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          while true; do
+            echo "============================================================"
+            echo "Nueva comprobación: $(TZ=Europe/Madrid date '+%d/%m/%Y %H:%M:%S')"
+            echo "============================================================"
 
-          git add data/state.json
+            python main.py
 
-          git diff --cached --quiet || git commit -m "Actualizar estado de vigilancia"
+            cd ..
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git push
+            git add data/state.json
+            git diff --cached --quiet || git commit -m "Actualizar estado de vigilancia"
+            git push || true
+
+            cd src
+
+            echo "Esperando 30 segundos..."
+            sleep 30
+          done
