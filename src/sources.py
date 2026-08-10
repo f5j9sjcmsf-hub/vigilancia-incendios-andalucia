@@ -1266,6 +1266,17 @@ def _merge_dgt_into_fire(fire, dgt_items):
 
 
 # ============================================================
+# FOTOGRAFÍA DATEX DE LA EJECUCIÓN ACTUAL
+# ============================================================
+
+# Se rellena en fetch_official_incidents() y se reutiliza inmediatamente
+# por fetch_official_reopenings(). Así ambas decisiones usan EXACTAMENTE
+# la misma consulta de INFOCAR/DGT y no dos consultas independientes.
+_LAST_DGT_ITEMS = []
+_LAST_DGT_OK = False
+
+
+# ============================================================
 # API UTILIZADA POR main.py
 # ============================================================
 
@@ -1279,7 +1290,15 @@ def fetch_official_incidents():
     4. Los distintos registros DGT del mismo incendio se agrupan
        en un único aviso.
     """
-    dgt_items = fetch_datex_closures()
+    global _LAST_DGT_ITEMS, _LAST_DGT_OK
+
+    # Una única fotografía de INFOCAR/DGT por ejecución.
+    dgt_items, dgt_ok = _fetch_datex_closures_with_status()
+    _LAST_DGT_ITEMS = list(dgt_items)
+    _LAST_DGT_OK = bool(dgt_ok)
+
+    if not dgt_ok:
+        return []
 
     if not dgt_items:
         return []
@@ -1505,10 +1524,13 @@ def fetch_official_reopenings(previous_state=None, current_incidents=None):
     if not previous_roads:
         return []
 
-    active_dgt, dgt_ok = _fetch_datex_closures_with_status()
+    # IMPORTANTE: reutilizamos la misma fotografía DATEX obtenida por
+    # fetch_official_incidents(). No hacemos una segunda petición a INFOCAR.
+    active_dgt = list(_LAST_DGT_ITEMS)
+    dgt_ok = bool(_LAST_DGT_OK)
 
-    # Si INFOCAR no pudo consultarse, no podemos interpretar una ausencia
-    # como reapertura. Esto evita falsos positivos por errores de red.
+    # Si INFOCAR no pudo consultarse correctamente, una ausencia NO puede
+    # interpretarse como reapertura.
     if not dgt_ok:
         return []
 
@@ -1518,9 +1540,7 @@ def fetch_official_reopenings(previous_state=None, current_incidents=None):
         if normalize_road(item.get("road", ""))
     }
 
-    # current_incidents es la fotografía ya vinculada INFOCAR + INFOCA.
-    # Se usa como segunda comprobación para no marcar como reabierta una
-    # carretera que sigue presente aunque haya cambiado de agrupación.
+    # current_incidents sirve únicamente como comprobación adicional.
     current_roads = _current_incident_roads(current_incidents or [])
 
     reopenings = []
