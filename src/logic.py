@@ -340,45 +340,184 @@ def _merge_incident_items(items):
 
 def process_incidents(state, detected):
     alerts = []
-    incidents = state.setdefault("incidents", {})
 
-    # Agrupar primero. Esto evita que dos artículos del mismo incendio
-    # produzcan dos mensajes separados dentro de la misma ejecución.
+    incidents = state.setdefault(
+        "incidents",
+        {}
+    )
+
+    # Agrupar primero por incendio.
     batches = {}
 
     for item in detected:
-        key = incident_key(item)
-        batches.setdefault(key, []).append(item)
+
+        key = incident_key(
+            item
+        )
+
+        batches.setdefault(
+            key,
+            []
+        ).append(
+            item
+        )
 
     for key, items in batches.items():
-        merged = _merge_incident_items(items)
+
+        merged = _merge_incident_items(
+            items
+        )
+
         if not merged:
             continue
 
+        # --------------------------------------------------------
+        # INCENDIO NUEVO
+        # --------------------------------------------------------
+
         if key not in incidents:
+
             incidents[key] = {
                 **merged,
                 "status": "PENDIENTE",
                 "notified": True,
                 "reopened_notified": False,
+                "reopened_roads": [],
             }
 
             alerts.append(
-                format_new_incident(merged)
+                format_new_incident(
+                    merged
+                )
             )
 
-        else:
-            current = incidents[key]
+            continue
 
-            # Actualiza la fotografía actual completa del incendio.
-            for field, value in merged.items():
-                if value in ("", None):
-                    continue
+        # --------------------------------------------------------
+        # INCENDIO YA CONOCIDO
+        # --------------------------------------------------------
 
-                current[field] = value
+        current = incidents[
+            key
+        ]
+
+        previous_details = _road_details(
+            current
+        )
+
+        current_details = _road_details(
+            merged
+        )
+
+        previous_roads = {
+            _clean(
+                detail.get(
+                    "road"
+                )
+            ).lower()
+            for detail in previous_details
+            if _clean(
+                detail.get(
+                    "road"
+                )
+            )
+        }
+
+        current_roads = {
+            _clean(
+                detail.get(
+                    "road"
+                )
+            ).lower()
+            for detail in current_details
+            if _clean(
+                detail.get(
+                    "road"
+                )
+            )
+        }
+
+        reopened_roads = {
+            _clean(
+                road
+            ).lower()
+            for road in current.get(
+                "reopened_roads",
+                []
+            )
+        }
+
+        # --------------------------------------------------------
+        # NUEVOS CIERRES
+        #
+        # Una carretera que ya había sido declarada reabierta y
+        # vuelve a aparecer en INFOCAR significa que vuelve a estar
+        # cortada.
+        # --------------------------------------------------------
+
+        reclosed_roads = (
+            current_roads
+            & reopened_roads
+        )
+
+        if reclosed_roads:
+
+            # Elimina esas carreteras de la lista de reabiertas.
+            current["reopened_roads"] = [
+                road
+                for road in current.get(
+                    "reopened_roads",
+                    []
+                )
+                if _clean(
+                    road
+                ).lower()
+                not in reclosed_roads
+            ]
+
+            # Generamos un nuevo aviso con la fotografía completa
+            # actual del incendio.
+            alerts.append(
+                format_new_incident(
+                    merged
+                )
+            )
+
+        # --------------------------------------------------------
+        # ACTUALIZAR FOTOGRAFÍA ACTUAL
+        # --------------------------------------------------------
+
+        for field, value in merged.items():
+
+            if value in (
+                "",
+                None,
+                "No disponible",
+            ):
+                continue
+
+            current[field] = value
+
+        # INFOCAR representa una fotografía actual:
+        # sustituimos la lista anterior por la actual.
+        if merged.get(
+            "road_details"
+        ) is not None:
+
+            current[
+                "road_details"
+            ] = merged[
+                "road_details"
+            ]
+
+        current[
+            "road"
+        ] = merged.get(
+            "road",
+            ""
+        )
 
     return alerts
-
 
 def _reopening_key(item):
     return "|".join(
