@@ -389,23 +389,38 @@ def process_reopenings(state, reopenings):
         fire = _clean(item.get("fire")).lower()
         province = _clean(item.get("province")).lower()
         municipality = _clean(item.get("municipality")).lower()
+        road = _clean(item.get("road"))
 
+        # Para una reapertura, la carretera es el identificador operativo.
+        # No exigimos que nombre de incendio o municipio coincidan exactamente,
+        # porque INFOCA puede actualizar esos datos entre dos ejecuciones.
         matching_key = None
 
+        # Primera opción: carretera + provincia.
         for key, current in incidents.items():
+            current_province = _clean(current.get("province")).lower()
+            active_roads = _active_road_names(current)
             if (
-                _clean(current.get("fire")).lower() == fire
-                and _clean(current.get("province")).lower() == province
-                and _clean(current.get("municipality")).lower() == municipality
+                road
+                and road.lower() in active_roads
+                and (not province or current_province == province)
             ):
                 matching_key = key
                 break
+
+        # Segunda opción: carretera sin exigir provincia, solo si no hubo
+        # coincidencia anterior. Esto permite absorber cambios de agrupación.
+        if matching_key is None:
+            for key, current in incidents.items():
+                active_roads = _active_road_names(current)
+                if road and road.lower() in active_roads:
+                    matching_key = key
+                    break
 
         if matching_key is None:
             continue
 
         current = incidents[matching_key]
-        road = _clean(item.get("road"))
 
         if not road:
             continue
