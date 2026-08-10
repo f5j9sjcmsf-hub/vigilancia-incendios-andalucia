@@ -84,7 +84,7 @@ def _telegram_diagnostics(state):
     pero el bot no responde. Nunca imprime el token completo.
     """
     print("=" * 60)
-    print("DIAGNÓSTICO TELEGRAM v15")
+    print("DIAGNÓSTICO TELEGRAM v16")
     print("=" * 60)
 
     print(f"[TELEGRAM] Token disponible: {'SÍ' if TELEGRAM_BOT_TOKEN else 'NO'}")
@@ -223,8 +223,10 @@ def _poll_commands(state):
     """
     Lee las órdenes pendientes del chat configurado.
 
-    Acepta tanto comandos escritos (/start, /estado, etc.) como pulsaciones
-    de botones inline (callback_query).
+    Acepta comandos escritos y botones inline. Si llegan varios mensajes
+    juntos, se prioriza la última orden de acción (iniciar/reiniciar/estado/pausar)
+    y se ignoran /start anteriores para evitar que /start anule una pulsación
+    válida del menú.
     """
     if not TELEGRAM_API or not TELEGRAM_CHAT_ID:
         return None
@@ -246,14 +248,14 @@ def _poll_commands(state):
     if not updates:
         return None
 
-    command = None
+    action_commands = []
+    start_received = False
 
     for update in updates:
         update_id = update.get("update_id")
         if isinstance(update_id, int):
             state["telegram_update_offset"] = update_id + 1
 
-        # 1. Botones inline
         callback = update.get("callback_query") or {}
         if callback:
             callback_data = str(callback.get("data") or "").strip()
@@ -265,33 +267,48 @@ def _poll_commands(state):
                 continue
 
             if callback_data in {"iniciar", "reiniciar", "estado", "pausar"}:
-                command = callback_data
+                action_commands.append(callback_data)
 
                 callback_id = callback.get("id")
                 if callback_id:
                     _telegram_request(
                         "answerCallbackQuery",
-                        {
-                            "callback_query_id": callback_id,
-                        },
+                        {"callback_query_id": callback_id},
                     )
                 continue
 
-        # 2. Comandos escritos
         message = update.get("message") or {}
         chat = message.get("chat") or {}
-        if not _authorized_chat(chat.get("id")):
+        chat_id = chat.get("id")
+        if not _authorized_chat(chat_id):
             continue
 
         text = str(message.get("text") or "").strip()
         normalized = text.lower()
 
+        matched = None
         for label, value in COMMANDS.items():
             if normalized == label.lower():
-                command = value
+                matched = value
                 break
 
-    return command
+        if matched == "start":
+            start_received = True
+            continue
+
+        if matched:
+            action_commands.append(matched)
+
+    if action_commands:
+        command = action_commands[-1]
+        print(f"[TELEGRAM] ORDEN DE ACCIÓN DETECTADA: {command}")
+        return command
+
+    if start_received:
+        print("[TELEGRAM] ORDEN /start detectada")
+        return "start"
+
+    return None
 
 
 # ============================================================
@@ -364,7 +381,8 @@ def _handle_command(state, command):
 # ============================================================
 
 
-def main():
+def run_once():
+    """Ejecuta una comprobación completa."""
     state = load_state()
 
     if not isinstance(state, dict):
@@ -373,53 +391,96 @@ def main():
     state.setdefault("monitoring_active", True)
     state.setdefault("monitoring_initialized", bool(state.get("incidents")))
 
-    # Diagnóstico temporal de Telegram. No modifica el estado de vigilancia.
     _telegram_diagnostics(state)
 
     command = _poll_commands(state)
 
-    # Las órdenes de control tienen prioridad sobre la vigilancia normal.
     if command:
         handled = _handle_command(state, command)
         if handled:
             save_state(state)
             return
 
-        # /estado no modifica la fotografía. Continuamos con la vigilancia
-        # normal si estaba activa.
-
     if not state.get("monitoring_active", True):
         state["last_run"] = datetime.now(TIMEZONE).isoformat()
         save_state(state)
         return
 
-    # Primera ejecución de un estado vacío: se toma como línea base.
-    # Esto evita que al activar el sistema por primera vez se conviertan
-    # los cortes ya existentes en falsos "nuevos cortes".
     if not state.get("monitoring_initialized"):
         detected = fetch_official_incidents()
         _activate_from_zero(state, detected)
         save_state(state)
         return
 
-    # Una única fotografía actual de INFOCAR/DGT + INFOCA.
     detected = fetch_official_incidents()
 
-    # La reapertura se calcula contra el estado anterior, antes de que
-    # process_incidents sustituya la fotografía almacenada.
     reopenings = fetch_official_reopenings(
         state,
         detected,
     )
 
-    # Primero notificamos reaperturas.
     for message in process_reopenings(
         state,
         reopenings,
     ):
         send_message(message)
 
-    # Después actualizamos la fotografía actual y notificamos nuevos cortes.
+    for message in process_incidents(
+        state,
+        detected,
+    ):
+        send_message(message)
+
+    state["last_run"] = datetime.now(TIMEZONE).isoformat()
+    state["monitoring_initialized"] = True
+
+    save_state(state)
+
+
+def main():
+    """Ejecuta una única comprobación completa de vigilancia."""
+    state = load_state()
+
+    if not isinstance(state, dict):
+        state = {}
+
+    state.setdefault("monitoring_active", True)
+    state.setdefault("monitoring_initialized", bool(state.get("incidents")))
+
+    _telegram_diagnostics(state)
+
+    command = _poll_commands(state)
+
+    if command:
+        handled = _handle_command(state, command)
+        if handled:
+            save_state(state)
+            return
+
+    if not state.get("monitoring_active", True):
+        state["last_run"] = datetime.now(TIMEZONE).isoformat()
+        save_state(state)
+        return
+
+    if not state.get("monitoring_initialized"):
+        detected = fetch_official_incidents()
+        _activate_from_zero(state, detected)
+        save_state(state)
+        return
+
+    detected = fetch_official_incidents()
+
+    reopenings = fetch_official_reopenings(
+        state,
+        detected,
+    )
+
+    for message in process_reopenings(
+        state,
+        reopenings,
+    ):
+        send_message(message)
+
     for message in process_incidents(
         state,
         detected,
