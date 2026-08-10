@@ -17,7 +17,9 @@ def main():
     # Cargamos primero la fotografía anterior guardada en storage.
     state = load_state()
 
-    # Obtenemos la fotografía ACTUAL de INFOCAR + INFOCA.
+    # Obtenemos UNA ÚNICA fotografía actual de INFOCAR/DGT + INFOCA.
+    # sources.py v11 guarda internamente la fotografía DATEX de esta ejecución
+    # para que la detección de reapertura use exactamente los mismos datos.
     detected = fetch_official_incidents()
 
     # IMPORTANTE: la reapertura se calcula contra el estado anterior,
