@@ -452,3 +452,84 @@ def process_reopenings(state, reopenings):
 
     return alerts
 
+
+
+# ============================================================
+# CONTROL DEL BOT / LÍNEA BASE
+# ============================================================
+
+def initialize_baseline(state, detected):
+    """
+    Reinicia la memoria de vigilancia tomando ``detected`` como fotografía
+    inicial. No genera avisos.
+
+    Se utiliza con las órdenes Iniciar/Reiniciar para que los cortes que ya
+    existían antes de comenzar la vigilancia no aparezcan como nuevos.
+    """
+    incidents = {}
+
+    for item in detected or []:
+        key = incident_key(item)
+        if not key:
+            continue
+
+        incidents[key] = {
+            **item,
+            "status": "BASELINE",
+            "notified": True,
+            "reopened_notified": False,
+            "reopened_roads": [],
+        }
+
+    state["incidents"] = incidents
+    state["monitoring_initialized"] = True
+    state["baseline_at"] = datetime.now().isoformat()
+
+
+def format_status(state):
+    """Genera el resumen que se devuelve mediante el botón Estado."""
+    active = state.get("monitoring_active", True)
+    initialized = state.get("monitoring_initialized", False)
+    incidents = state.get("incidents", {})
+
+    active_roads = set()
+    fires = set()
+
+    for item in incidents.values():
+        if not isinstance(item, dict):
+            continue
+
+        fires.add(_clean(item.get("fire")) or "Incendio forestal")
+
+        details = _road_details(item)
+        for detail in details:
+            road = _clean(detail.get("road"))
+            if road:
+                active_roads.add(road)
+
+    last_run = _clean(state.get("last_run")) or "No disponible"
+    baseline = _clean(state.get("baseline_at")) or "No disponible"
+
+    estado = "🟢 ACTIVA" if active else "⏸️ PAUSADA"
+    inicializada = "Sí" if initialized else "No"
+
+    lines = [
+        "📊 <b>ESTADO DE LA VIGILANCIA</b>",
+        "",
+        f"Estado: <b>{estado}</b>",
+        f"Inicializada: {inicializada}",
+        f"Incendios registrados: <b>{len(fires)}</b>",
+        f"Carreteras registradas: <b>{len(active_roads)}</b>",
+        f"Última ejecución: {last_run}",
+        f"Línea base: {baseline}",
+    ]
+
+    if active_roads:
+        lines.extend([
+            "",
+            "<b>Carreteras registradas:</b>",
+        ])
+        for road in sorted(active_roads):
+            lines.append(f"• {_escape(road)}")
+
+    return "\n".join(lines)
