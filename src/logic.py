@@ -134,14 +134,14 @@ def _official_sources(item):
 
 def incident_key(item):
     """
-    Identidad estable del incendio.
+    Un único aviso por incendio.
 
-    No utiliza el titular/nombre textual del incendio porque INFOCA puede
-    publicar el mismo incendio con titulares diferentes. Provincia +
-    municipio evita avisos duplicados por cambios de titular.
+    No utiliza la lista de carreteras: si el mismo incendio incorpora
+    nuevas carreteras en una ejecución posterior, no genera otro aviso.
     """
     return "|".join(
         [
+            _clean(item.get("fire")).strip().lower(),
             _clean(item.get("province")).strip().lower(),
             _clean(item.get("municipality")).strip().lower(),
         ]
@@ -174,8 +174,7 @@ def format_new_incident(item):
             "",
             f"🕐 Detectado: "
             f"{_escape(_format_detected_at(item.get('detected_at')))}",
-            f"<b>DGT:</b> <i>{_escape(item.get('dgt') or 'No')}</i>",
-            f"<b>INFOCA:</b> <i>{_escape(item.get('infoca') or 'No')}</i>",
+            "Situación: <b>Corte confirmado</b>",
         ]
     )
 
@@ -260,125 +259,56 @@ def format_reopening(item):
     return "\n".join(lines)
 
 
-def _merge_incident_items(items):
-    """
-    Fusiona varias detecciones del mismo incendio antes de decidir si se
-    envía el aviso. Así, aunque INFOCA entregue varias actualizaciones en
-    la misma ejecución, Telegram recibe una sola fotografía completa.
-    """
-    if not items:
-        return None
+def _road_details_without(details, road):
+    """Elimina una carretera concreta de una lista de detalles."""
+    target = _clean(road).lower()
+    result = []
 
-    base = dict(items[0])
+    for detail in details or []:
+        if not isinstance(detail, dict):
+            continue
 
-    merged_details = []
-    seen_details = set()
+        if _clean(detail.get("road")).lower() == target:
+            continue
 
-    for item in items:
-        for detail in _road_details(item):
-            road = _clean(detail.get("road"))
-            section = _clean(detail.get("section"))
-            direction = _clean(detail.get("direction"))
+        result.append(detail)
 
-            if not road:
-                continue
+    return result
 
-            key = (
-                road.lower(),
-                section.lower(),
-                direction.lower(),
-            )
 
-            if key in seen_details:
-                continue
+def _active_road_names(item):
+    return {
+        _clean(detail.get("road")).lower()
+        for detail in _road_details(item)
+        if _clean(detail.get("road"))
+    }
 
-            seen_details.add(key)
-            merged_details.append(
-                {
-                    "road": road,
-                    "section": section,
-                    "direction": direction,
-                }
-            )
 
-        # Conserva todas las fuentes oficiales.
-        existing_sources = _official_sources(base)
-        for source in _official_sources(item):
-            if source not in existing_sources:
-                existing_sources.append(source)
+def _find_detail(item, road):
+    target = _clean(road).lower()
 
-        base["other_sources"] = " | ".join(existing_sources)
+    for detail in _road_details(item):
+        if _clean(detail.get("road")).lower() == target:
+            return detail
 
-        # Preferimos un valor real frente a uno vacío.
-        for field in (
-            "fire",
-            "province",
-            "municipality",
-            "detected_at",
-            "dgt",
-            "infoca",
-            "source_url",
-            "source_title",
-        ):
-            value = item.get(field)
-            if value not in ("", None, "No disponible"):
-                if base.get(field) in (
-                    "",
-                    None,
-                    "No disponible",
-                ):
-                    base[field] = value
-
-    base["road_details"] = merged_details
-    base["road"] = ", ".join(
-        detail["road"]
-        for detail in merged_details
-    )
-
-    return base
+    return {
+        "road": road,
+        "section": "",
+        "direction": "",
+    }
 
 
 def process_incidents(state, detected):
     alerts = []
-
-    incidents = state.setdefault(
-        "incidents",
-        {}
-    )
-
-    # Agrupar primero por incendio.
-    batches = {}
+    incidents = state.setdefault("incidents", {})
 
     for item in detected:
-
-        key = incident_key(
-            item
-        )
-
-        batches.setdefault(
-            key,
-            []
-        ).append(
-            item
-        )
-
-    for key, items in batches.items():
-
-        merged = _merge_incident_items(
-            items
-        )
-
-        if not merged:
-            continue
-
-        # --------------------------------------------------------
-        # INCENDIO NUEVO
-        # --------------------------------------------------------
+        key = incident_key(item)
+        current_roads = _active_road_names(item)
 
         if key not in incidents:
-
             incidents[key] = {
-                **merged,
+                **item,
                 "status": "PENDIENTE",
                 "notified": True,
                 "reopened_notified": False,
@@ -386,138 +316,57 @@ def process_incidents(state, detected):
             }
 
             alerts.append(
-                format_new_incident(
-                    merged
-                )
+                format_new_incident(item)
             )
-
             continue
 
-        # --------------------------------------------------------
-        # INCENDIO YA CONOCIDO
-        # --------------------------------------------------------
-
-        current = incidents[
-            key
-        ]
-
-        previous_details = _road_details(
-            current
-        )
-
-        current_details = _road_details(
-            merged
-        )
-
-        previous_roads = {
-            _clean(
-                detail.get(
-                    "road"
-                )
-            ).lower()
-            for detail in previous_details
-            if _clean(
-                detail.get(
-                    "road"
-                )
-            )
-        }
-
-        current_roads = {
-            _clean(
-                detail.get(
-                    "road"
-                )
-            ).lower()
-            for detail in current_details
-            if _clean(
-                detail.get(
-                    "road"
-                )
-            )
-        }
-
+        current = incidents[key]
         reopened_roads = {
-            _clean(
-                road
-            ).lower()
-            for road in current.get(
-                "reopened_roads",
-                []
-            )
+            _clean(value).lower()
+            for value in current.get("reopened_roads", [])
         }
 
-        # --------------------------------------------------------
-        # NUEVOS CIERRES
-        #
-        # Una carretera que ya había sido declarada reabierta y
-        # vuelve a aparecer en INFOCAR significa que vuelve a estar
-        # cortada.
-        # --------------------------------------------------------
+        # Una carretera que desapareció previamente y vuelve a aparecer
+        # representa un NUEVO corte, aunque pertenezca al mismo incendio.
+        reclosed = current_roads.intersection(reopened_roads)
 
-        reclosed_roads = (
-            current_roads
-            & reopened_roads
-        )
-
-        if reclosed_roads:
-
-            # Elimina esas carreteras de la lista de reabiertas.
-            current["reopened_roads"] = [
-                road
-                for road in current.get(
-                    "reopened_roads",
-                    []
+        if reclosed:
+            detail_items = []
+            for road in sorted(reclosed):
+                detail_items.append(
+                    _find_detail(item, road)
                 )
-                if _clean(
-                    road
-                ).lower()
-                not in reclosed_roads
-            ]
 
-            # Generamos un nuevo aviso con la fotografía completa
-            # actual del incendio.
+            alert_item = {
+                **item,
+                "road_details": detail_items,
+                "road": ", ".join(
+                    detail.get("road", "")
+                    for detail in detail_items
+                    if detail.get("road")
+                ),
+            }
+
             alerts.append(
-                format_new_incident(
-                    merged
-                )
+                format_new_incident(alert_item)
             )
 
-        # --------------------------------------------------------
-        # ACTUALIZAR FOTOGRAFÍA ACTUAL
-        # --------------------------------------------------------
+            reopened_roads.difference_update(reclosed)
 
-        for field, value in merged.items():
-
-            if value in (
-                "",
-                None,
-                "No disponible",
-            ):
+        # Actualiza la fotografía actual sin acumular carreteras que ya no
+        # figuran en INFOCAR.
+        for field, value in item.items():
+            if value in ("", None):
                 continue
-
             current[field] = value
 
-        # INFOCAR representa una fotografía actual:
-        # sustituimos la lista anterior por la actual.
-        if merged.get(
-            "road_details"
-        ) is not None:
+        if item.get("road_details") is not None:
+            current["road_details"] = item["road_details"]
 
-            current[
-                "road_details"
-            ] = merged[
-                "road_details"
-            ]
-
-        current[
-            "road"
-        ] = merged.get(
-            "road",
-            ""
-        )
+        current["reopened_roads"] = sorted(reopened_roads)
 
     return alerts
+
 
 def _reopening_key(item):
     return "|".join(
@@ -527,87 +376,27 @@ def _reopening_key(item):
             _clean(item.get("municipality")).lower(),
             _clean(item.get("road")).lower(),
             _clean(item.get("section")).lower(),
+            _clean(item.get("reopened_at")).lower(),
         ]
     )
 
 
 def process_reopenings(state, reopenings):
-    """
-    Procesa las reaperturas detectadas por comparación de fotografías
-    de INFOCAR.
-
-    Cada carretera desaparecida de INFOCAR se trata individualmente.
-
-    Una vez notificada una reapertura, queda marcada como abierta para
-    evitar repetir el aviso mientras siga ausente del feed.
-    """
-
     alerts = []
-
-    incidents = state.setdefault(
-        "incidents",
-        {}
-    )
+    incidents = state.setdefault("incidents", {})
 
     for item in reopenings:
-
-        fire = _clean(
-            item.get(
-                "fire"
-            )
-        ).lower()
-
-        province = _clean(
-            item.get(
-                "province"
-            )
-        ).lower()
-
-        municipality = _clean(
-            item.get(
-                "municipality"
-            )
-        ).lower()
-
-        road = _clean(
-            item.get(
-                "road"
-            )
-        )
-
-        if not road:
-            continue
-
-        # --------------------------------------------------------
-        # LOCALIZAR EL INCENDIO
-        # --------------------------------------------------------
+        fire = _clean(item.get("fire")).lower()
+        province = _clean(item.get("province")).lower()
+        municipality = _clean(item.get("municipality")).lower()
 
         matching_key = None
 
         for key, current in incidents.items():
-
-            current_fire = _clean(
-                current.get(
-                    "fire"
-                )
-            ).lower()
-
-            current_province = _clean(
-                current.get(
-                    "province"
-                )
-            ).lower()
-
-            current_municipality = _clean(
-                current.get(
-                    "municipality"
-                )
-            ).lower()
-
             if (
-                current_fire == fire
-                and current_province == province
-                and current_municipality == municipality
+                _clean(current.get("fire")).lower() == fire
+                and _clean(current.get("province")).lower() == province
+                and _clean(current.get("municipality")).lower() == municipality
             ):
                 matching_key = key
                 break
@@ -615,50 +404,36 @@ def process_reopenings(state, reopenings):
         if matching_key is None:
             continue
 
-        current = incidents[
-            matching_key
-        ]
+        current = incidents[matching_key]
+        road = _clean(item.get("road"))
 
-        road_key = road.lower()
-
-        # --------------------------------------------------------
-        # EVITAR DUPLICADOS
-        # --------------------------------------------------------
-
-        reopened_roads = current.setdefault(
-            "reopened_roads",
-            []
-        )
-
-        reopened_roads_normalized = {
-            _clean(value).lower()
-            for value in reopened_roads
-        }
-
-        # Si ya notificamos esta reapertura y la carretera continúa
-        # fuera de INFOCAR, no volvemos a avisar.
-        if road_key in reopened_roads_normalized:
+        if not road:
             continue
 
-        # --------------------------------------------------------
-        # REGISTRAR REAPERTURA
-        # --------------------------------------------------------
+        active_roads = _active_road_names(current)
 
-        reopened_roads.append(
-            road
-        )
+        # La carretera debe haber desaparecido realmente de la fotografía
+        # almacenada antes de confirmar la reapertura.
+        if road.lower() in active_roads:
+            continue
 
-        current["last_reopening_key"] = (
-            f"{fire}|{province}|"
-            f"{municipality}|{road_key}"
-        )
+        reopen_key = _reopening_key(item)
+        if current.get("last_reopening_key") == reopen_key:
+            continue
 
+        reopened_roads = {
+            _clean(value).lower()
+            for value in current.get("reopened_roads", [])
+        }
+        reopened_roads.add(road.lower())
+
+        current["reopened_roads"] = sorted(reopened_roads)
+        current["last_reopening_key"] = reopen_key
         current["road_open"] = True
 
         alerts.append(
-            format_reopening(
-                item
-            )
+            format_reopening(item)
         )
 
     return alerts
+
