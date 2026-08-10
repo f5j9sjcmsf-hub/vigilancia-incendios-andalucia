@@ -3,7 +3,7 @@ name: Vigilancia Andalucía
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0,30 * * * *"
+    - cron: "*/30 * * * *"
 
 permissions:
   contents: write
@@ -29,36 +29,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Comprobar horario de España
-        id: horario
-        run: |
-          HORA=$(TZ=Europe/Madrid date +%H)
-          MINUTO=$(TZ=Europe/Madrid date +%M)
-
-          echo "Hora oficial de España: ${HORA}:${MINUTO}"
-
-          if [ "$HORA" -lt 7 ] || [ "$HORA" -gt 22 ]; then
-            echo "fuera_horario=true" >> "$GITHUB_OUTPUT"
-            echo "Fuera del horario de vigilancia."
-          elif [ "$HORA" -eq 22 ] && [ "$MINUTO" -gt 0 ]; then
-            echo "fuera_horario=true" >> "$GITHUB_OUTPUT"
-            echo "Fuera del horario de vigilancia."
-          else
-            echo "fuera_horario=false" >> "$GITHUB_OUTPUT"
-            echo "Dentro del horario de vigilancia."
-          fi
-
       - name: Instalar dependencias
-        if: steps.horario.outputs.fuera_horario == 'false'
         run: pip install -r requirements.txt
 
       - name: Ejecutar vigilancia
-        if: steps.horario.outputs.fuera_horario == 'false'
         working-directory: src
         run: python main.py
 
       - name: Guardar estado
-        if: steps.horario.outputs.fuera_horario == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
