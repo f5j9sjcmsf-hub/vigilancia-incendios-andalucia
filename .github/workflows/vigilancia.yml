@@ -3,7 +3,7 @@ name: Vigilancia Andalucía
 on:
   workflow_dispatch:
   schedule:
-    - cron: "7 7-21 * * *"
+    - cron: "0,30 * * * *"
 
 permissions:
   contents: write
@@ -33,10 +33,14 @@ jobs:
         id: horario
         run: |
           HORA=$(TZ=Europe/Madrid date +%H)
+          MINUTO=$(TZ=Europe/Madrid date +%M)
 
-          echo "Hora oficial de España: $HORA"
+          echo "Hora oficial de España: ${HORA}:${MINUTO}"
 
-          if [ "$HORA" -lt 9 ] || [ "$HORA" -gt 22 ]; then
+          if [ "$HORA" -lt 7 ] || [ "$HORA" -gt 22 ]; then
+            echo "fuera_horario=true" >> "$GITHUB_OUTPUT"
+            echo "Fuera del horario de vigilancia."
+          elif [ "$HORA" -eq 22 ] && [ "$MINUTO" -gt 0 ]; then
             echo "fuera_horario=true" >> "$GITHUB_OUTPUT"
             echo "Fuera del horario de vigilancia."
           else
