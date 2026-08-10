@@ -16,13 +16,23 @@ from telegram import send_message
 def main():
     state = load_state()
 
+    # Fotografía actual de INFOCAR + INFOCA.
     detected = fetch_official_incidents()
-    reopenings = fetch_official_reopenings()
 
-    for message in process_incidents(state, detected):
+    # Comparamos la fotografía actual con la anterior almacenada.
+    # Las desapariciones de INFOCAR generan posibles reaperturas.
+    reopenings = fetch_official_reopenings(
+        state,
+        detected,
+    )
+
+    # Procesamos primero las reaperturas para poder actualizar
+    # correctamente el estado de las carreteras.
+    for message in process_reopenings(state, reopenings):
         send_message(message)
 
-    for message in process_reopenings(state, reopenings):
+    # Después actualizamos la fotografía actual del incendio.
+    for message in process_incidents(state, detected):
         send_message(message)
 
     state["last_run"] = datetime.now(TIMEZONE).isoformat()
