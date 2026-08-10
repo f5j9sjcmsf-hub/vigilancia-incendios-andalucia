@@ -29,6 +29,7 @@ TELEGRAM_API = (
 
 COMMANDS = {
     "▶️ Iniciar vigilancia": "iniciar",
+    "/start": "start",
     "/iniciar": "iniciar",
     "🔄 Reiniciar desde 0": "reiniciar",
     "/reiniciar": "reiniciar",
@@ -275,6 +276,17 @@ def _activate_from_zero(state, detected):
 
 
 def _handle_command(state, command):
+    if command == "start":
+        _send_control_message(
+            "🤖 <b>Vigilancia de incendios de Andalucía</b>\n\n"
+            "Bot conectado correctamente.\n\n"
+            "Usa <b>▶️ Iniciar vigilancia</b> para tomar una primera fotografía "
+            "y empezar la vigilancia desde ese momento, o <b>🔄 Reiniciar desde 0</b> "
+            "para borrar la línea base anterior y comenzar de nuevo.\n\n"
+            "También puedes consultar <b>📊 Estado</b> o pausar la vigilancia."
+        )
+        return False
+
     if command == "pausar":
         state["monitoring_active"] = False
         _send_control_message(
