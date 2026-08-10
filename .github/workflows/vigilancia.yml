@@ -29,7 +29,7 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
-      - name: Ejecutar vigilancia v16
+      - name: Ejecutar vigilancia v17
         working-directory: src
         run: |
           while true; do
