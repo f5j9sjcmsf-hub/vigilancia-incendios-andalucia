@@ -50,7 +50,7 @@ def _send_telegram(text, label):
 
 def main():
     """
-    VIGILANCIA ANDALUCÍA v24
+    VIGILANCIA ANDALUCÍA v27
 
     Flujo de cada ejecución:
 
@@ -69,7 +69,7 @@ def main():
     las 24 horas.
     """
     print("=" * 60)
-    print("VIGILANCIA ANDALUCÍA v24")
+    print("VIGILANCIA ANDALUCÍA v27")
     print("=" * 60)
 
     state = load_state()
