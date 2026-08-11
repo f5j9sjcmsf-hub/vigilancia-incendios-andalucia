@@ -1,6 +1,7 @@
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from urllib.parse import urljoin
 
 import requests
@@ -288,125 +289,124 @@ def _numeric_values_from_element(element):
     return values
 
 
-def _datex_km_range(record):
-    """
-    Extrae TODOS los PK publicados explícitamente por DATEX II.
-
-    V24 corrige la extracción que estaba fallando en V23. La DGT documenta
-    que la localización puede incluir un ``kilometerPoint`` y que los puntos
-    de referencia se definen mediante la pareja carretera-PK. Por ello se
-    buscan de forma explícita las variantes de los campos kilométricos
-    dentro del ``situationRecord``.
-
-    NO se utilizan coordenadas, números de IDs, fechas ni números de
-    carreteras para fabricar un PK.
-    """
-    field_names = {
-        "kilometerpoint",
-        "kilometrepoint",
-        "kilometricpoint",
-        "kilometerpointstart",
-        "kilometerpointend",
-        "startkilometerpoint",
-        "endkilometerpoint",
-        "fromkilometerpoint",
-        "tokilometerpoint",
-        "startkilometrepoint",
-        "endkilometrepoint",
-        "fromkilometrepoint",
-        "tokilometrepoint",
-        "startkilometricpoint",
-        "endkilometricpoint",
-        "fromkilometricpoint",
-        "tokilometricpoint",
-        "startkm",
-        "endkm",
-        "fromkm",
-        "tokm",
-        "frompk",
-        "topk",
-        "pk",
-        "puntoquilometrico",
-        "puntokilometrico",
-        "kilometropunto",
-    }
+def _numeric_from_text(text):
+    """Devuelve números que parezcan PK dentro de un texto concreto."""
+    text = normalize(text)
+    if not text:
+        return []
 
     values = []
-    matched_tags = []
+    for match in re.findall(r"(?<![\d.-])(\d+(?:[.,]\d+)?)(?![\d.-])", text):
+        try:
+            value = float(match.replace(",", "."))
+        except ValueError:
+            continue
+        if 0 <= value <= 1000:
+            values.append(value)
+    return values
 
-    for element in record.iter():
+
+def _datex_km_range(record):
+    """
+    Extrae los PK del registro DATEX de forma robusta.
+
+    DGT puede publicar el PK mediante la extensión española
+    ``kilometerPoint`` (por ejemplo lse:kilometerPoint), pero también puede
+    expresar una localización lineal mediante ``fromPoint``/``toPoint`` y
+    ``referentIdentifier``. Esta función admite ambas representaciones.
+
+    No utiliza números arbitrarios del XML: solo lee campos cuyo nombre o
+    contexto DATEX identifica como localización kilométrica.
+    """
+    values = []
+
+    elements = list(record.iter())
+
+    # ------------------------------------------------------------
+    # 1. Extensión DGT: kilometerPoint / kilometrePoint / variantes.
+    # ------------------------------------------------------------
+    for element in elements:
         local = element.tag.rsplit("}", 1)[-1].lower()
-
-        # Primera prioridad: nombres oficiales/esperables de PK.
-        is_pk_field = local in field_names
-
-        # Segunda prioridad: extensiones cuyo nombre contiene claramente
-        # kilometro/kilometre/kilometric y punto/pk.
-        if not is_pk_field:
-            has_km_word = any(
-                token in local
-                for token in (
-                    "kilometer",
-                    "kilometre",
-                    "kilometric",
-                    "kilometro",
-                )
-            )
-            is_pk_field = has_km_word and (
-                "point" in local
-                or "punto" in local
-                or local.endswith("km")
-            )
-
-        if not is_pk_field:
+        if local not in {
+            "kilometerpoint",
+            "kilometrepoint",
+            "kilometricpoint",
+            "kilometerpointstart",
+            "kilometerpointend",
+            "startkilometerpoint",
+            "endkilometerpoint",
+            "fromkilometerpoint",
+            "tokilometerpoint",
+            "startkilometrepoint",
+            "endkilometrepoint",
+            "fromkilometrepoint",
+            "tokilometrepoint",
+            "startkilometricpoint",
+            "endkilometricpoint",
+            "fromkilometricpoint",
+            "tokilometricpoint",
+            "puntoquilometrico",
+            "puntokilometrico",
+            "kilometropunto",
+        }:
             continue
 
-        element_values = _numeric_values_from_element(element)
-        if element_values:
-            values.extend(element_values)
-            matched_tags.append(local)
+        values.extend(_numeric_from_text(element.text or ""))
+        for attr_value in element.attrib.values():
+            values.extend(_numeric_from_text(attr_value))
 
-    # Compatibilidad adicional con publicaciones que representan los
-    # extremos como elementos <from>/<to> pero únicamente si el contenido
-    # es inequívocamente un PK numérico.
-    for name in ("from", "to", "start", "end"):
-        for element in record.iter():
-            local = element.tag.rsplit("}", 1)[-1].lower()
-            if local != name:
-                continue
+    # ------------------------------------------------------------
+    # 2. Referencias de PK de una localización lineal DATEX.
+    # ------------------------------------------------------------
+    # En DATEX II una sección lineal puede estar definida por fromPoint y
+    # toPoint. Cada uno puede contener fromReferent/referentIdentifier con
+    # el identificador del PR/PK.
+    for element in elements:
+        local = element.tag.rsplit("}", 1)[-1].lower()
+        if local != "referentidentifier":
+            continue
 
-            text = normalize(" ".join(element.itertext()))
-            if not text:
-                continue
+        parent = None
+        # ElementTree no mantiene padre; comprobamos el texto del propio
+        # identificador y, posteriormente, si existe un referentType cercano
+        # mediante una búsqueda acotada en el mismo referent.
+        identifier_values = _numeric_from_text(element.text or "")
+        if not identifier_values:
+            continue
 
-            # Solo aceptamos el formato explícito de PK; no cualquier número.
-            if re.fullmatch(
-                r"(?:PK\s*)?\d+(?:[.,]\d+)?",
-                text,
-                re.IGNORECASE,
-            ):
-                try:
-                    value = float(
-                        re.sub(r"^PK\s*", "", text, flags=re.IGNORECASE)
-                        .replace(",", ".")
-                    )
-                except ValueError:
-                    continue
+        # Solo aceptamos identificadores que sean puramente numéricos o que
+        # indiquen explícitamente PK/PR. Esto evita interpretar IDs de otros
+        # objetos como puntos kilométricos.
+        raw = normalize(element.text or "")
+        if not (
+            re.fullmatch(r"\d+(?:[.,]\d+)?", raw)
+            or re.search(r"\b(?:pk|p\.k\.|pr|p\.r\.)\b", raw, re.I)
+        ):
+            continue
 
-                if 0 <= value <= 1000:
-                    values.append(value)
-                    matched_tags.append(local)
+        values.extend(identifier_values)
 
-    values = sorted(
-        set(round(value, 6) for value in values)
-    )
+    # ------------------------------------------------------------
+    # 3. Fallback específico para XML que utiliza from/to con PK explícito.
+    # ------------------------------------------------------------
+    for element in elements:
+        local = element.tag.rsplit("}", 1)[-1].lower()
+        if local not in {"from", "to", "frompoint", "topoint", "start", "end"}:
+            continue
+
+        text = normalize(" ".join(element.itertext()))
+        if not text:
+            continue
+
+        # Solo aceptamos cuando el bloque contiene una marca explícita de PK
+        # o una referencia numérica muy simple.
+        if re.search(r"\b(?:pk|p\.k\.|kil[oó]metro|pr|p\.r\.)\b", text, re.I):
+            values.extend(_numeric_from_text(text))
+
+    values = sorted(set(round(value, 6) for value in values))
 
     if len(values) >= 2:
-        return (
-            _format_pk_value(values[0]),
-            _format_pk_value(values[-1]),
-        )
-
+        return _format_pk_value(values[0]), _format_pk_value(values[-1])
     if len(values) == 1:
         return _format_pk_value(values[0]), ""
 
@@ -507,6 +507,42 @@ def _datex_record_id(record):
                 return normalize(value)
 
     return ""
+
+
+def _datex_detected_at(record):
+    """
+    Obtiene la hora original del registro DGT/INFOCAR.
+
+    No debe utilizarse la hora de nuestra consulta como ``Detectado`` cuando
+    DATEX ya proporciona la creación/inicio del incidente. Se prioriza:
+      1. situationRecordCreationTime
+      2. overallStartTime
+      3. situationRecordVersionTime
+      4. startTime
+    """
+    preferred = (
+        "situationRecordCreationTime",
+        "overallStartTime",
+        "situationRecordVersionTime",
+        "startTime",
+        "creationTime",
+    )
+
+    for name in preferred:
+        value = _tag_text(record, (name,))
+        if not value:
+            continue
+
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed.astimezone(ZoneInfo("Europe/Madrid")).strftime("%d/%m/%Y %H:%M")
+        except ValueError:
+            # Si la fuente ya entrega un formato legible, lo conservamos.
+            if re.search(r"\d{2}/\d{2}/\d{4}", value):
+                return value[:16]
+
+    # Solo como último recurso usamos la hora de consulta.
+    return display_datetime()
 
 
 def parse_datex_xml(xml_text, source_url):
@@ -616,7 +652,7 @@ def parse_datex_xml(xml_text, source_url):
                     "datex_id": record_id,
                     "situation_id": situation_id,
                     "dgt_source": source_url,
-                    "detected_at": display_datetime(),
+                    "detected_at": _datex_detected_at(record),
                 }
             )
 
