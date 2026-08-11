@@ -244,38 +244,94 @@ def _clean_km(value):
 
 
 def _datex_km_range(record):
-    """Devuelve (desde, hasta) sin usar descripciones de localización como PK."""
-    point = _tag_text(record, (
-        "kilometerPoint", "kilometrePoint", "kilometricPoint", "pk"
-    ))
-    if point:
-        value = _clean_km(point)
-        if value:
-            return value, ""
+    """
+    Extrae TODOS los PK publicados explícitamente por DATEX II.
 
-    from_km = _tag_text(record, (
-        "fromKilometerPoint", "fromKilometrePoint", "fromKilometricPoint",
-        "startKilometerPoint", "startKilometrePoint", "startKm", "fromPk",
-    ))
-    to_km = _tag_text(record, (
-        "toKilometerPoint", "toKilometrePoint", "toKilometricPoint",
-        "endKilometerPoint", "endKilometrePoint", "endKm", "toPk",
-    ))
+    No utiliza coordenadas ni números de localización. Se buscan tanto
+    campos de inicio/fin como campos de PK individuales y se conserva
+    todo lo publicado para poder reconstruir, por ejemplo, PK 4.5–31.8.
+    """
+    field_names = (
+        "kilometerPoint",
+        "kilometrePoint",
+        "kilometricPoint",
+        "pk",
+        "fromKilometerPoint",
+        "fromKilometrePoint",
+        "fromKilometricPoint",
+        "startKilometerPoint",
+        "startKilometrePoint",
+        "startKilometricPoint",
+        "startKm",
+        "fromPk",
+        "toKilometerPoint",
+        "toKilometrePoint",
+        "toKilometricPoint",
+        "endKilometerPoint",
+        "endKilometrePoint",
+        "endKilometricPoint",
+        "endKm",
+        "toPk",
+    )
 
-    # Algunos DATEX usan from/to, pero solo los aceptamos si contienen
-    # explícitamente PK/km o son números puros.
-    if not from_km:
-        raw = _tag_text(record, ("from",))
-        if re.fullmatch(r"\s*(?:PK\s*)?\d+(?:[.,]\d+)?\s*", raw, re.IGNORECASE):
-            from_km = raw
+    values = []
 
-    if not to_km:
-        raw = _tag_text(record, ("to",))
-        if re.fullmatch(r"\s*(?:PK\s*)?\d+(?:[.,]\d+)?\s*", raw, re.IGNORECASE):
-            to_km = raw
+    for element in record.iter():
+        local = element.tag.rsplit("}", 1)[-1].lower()
 
-    return _clean_km(from_km), _clean_km(to_km)
+        if local not in {name.lower() for name in field_names}:
+            continue
 
+        text = normalize(" ".join(element.itertext()))
+        if not text:
+            continue
+
+        # Aceptamos números explícitos dentro de un campo DATEX de PK.
+        for match in re.findall(
+            r"(?<![\d.-])(\d+(?:[.,]\d+)?)(?![\d.-])",
+            text,
+        ):
+            try:
+                value = float(match.replace(",", "."))
+            except ValueError:
+                continue
+
+            if 0 <= value <= 1000:
+                values.append(value)
+
+    # Compatibilidad con algunas publicaciones que usan from/to como
+    # números puros.
+    for name in ("from", "to"):
+        for element in record.iter():
+            local = element.tag.rsplit("}", 1)[-1].lower()
+            if local != name:
+                continue
+
+            text = normalize(" ".join(element.itertext()))
+            if re.fullmatch(
+                r"(?:PK\s*)?\d+(?:[.,]\d+)?",
+                text,
+                re.IGNORECASE,
+            ):
+                try:
+                    values.append(float(text.replace(",", ".")))
+                except ValueError:
+                    pass
+
+    values = sorted(
+        set(round(value, 6) for value in values)
+    )
+
+    if len(values) >= 2:
+        return (
+            _format_pk_value(values[0]),
+            _format_pk_value(values[-1]),
+        )
+
+    if len(values) == 1:
+        return _format_pk_value(values[0]), ""
+
+    return "", ""
 
 def _format_km_range(record):
     start_km, end_km = _datex_km_range(record)
@@ -822,16 +878,23 @@ def parse_infoca_article(article):
 
 
 def _fire_group_key(item):
-    """Agrupa actualizaciones del mismo incendio sin perder carreteras."""
-    province = normalize(item.get("province", "")).lower()
-    municipality = normalize(item.get("municipality", "")).lower()
+    """
+    Identidad del incendio en INFOCA.
 
-    if municipality and municipality != "no disponible":
-        return f"{province}|{municipality}"
+    Si INFOCA proporciona un nombre concreto (p. ej. Niebla), ese nombre
+    tiene prioridad sobre la provincia. Esto permite que un mismo incendio
+    que afecta a Huelva y Sevilla siga siendo UN solo incendio.
 
+    Solo cuando no existe nombre concreto se utiliza municipio + provincia.
+    """
     fire = normalize(item.get("fire", "")).lower()
-    return f"{province}|{fire}"
+    if fire and fire != "incendio forestal":
+        return f"name|{fire}"
 
+    municipality = normalize(item.get("municipality", "")).lower()
+    province = normalize(item.get("province", "")).lower()
+
+    return f"place|{municipality}|{province}"
 
 def _merge_infoca_fire_updates(items):
     """Fusiona artículos del mismo incendio y conserva todas sus carreteras."""
@@ -952,10 +1015,6 @@ def _haversine_km(lat1, lon1, lat2, lon2):
 
 def _direct_dgt_matches_fire(dgt_item, fire):
     road = normalize_road(dgt_item.get("road", ""))
-    province = fire.get("province", "No disponible")
-
-    if not _road_belongs_to_province(road, province):
-        return False
 
     fire_roads = {
         normalize_road(value)
@@ -963,26 +1022,38 @@ def _direct_dgt_matches_fire(dgt_item, fire):
         if normalize_road(value)
     }
 
-    if road in fire_roads:
+    # Coincidencia exacta con una carretera mencionada por INFOCA.
+    if road and road in fire_roads:
         return True
 
-    location = normalize(dgt_item.get("location_text", "")).lower()
-    municipality = normalize(fire.get("municipality", "")).lower()
+    location = normalize(
+        dgt_item.get("location_text", "")
+    ).lower()
 
-    return bool(
+    municipality = normalize(
+        fire.get("municipality", "")
+    ).lower()
+
+    if (
         municipality
         and municipality != "no disponible"
         and municipality in location
-    )
+    ):
+        return True
 
+    return False
 
 def _expand_fire_dgt_cluster(fire, direct_matches, dgt_items):
     """
-    Amplía la relación a otros cortes INFOCAR activos del mismo incendio.
+    Amplía la relación a otros cortes INFOCAR del mismo incendio.
 
-    Se hace de forma conservadora: mismo territorio provincial y proximidad
-    geográfica a un corte ya asociado. No basta con que sean carreteras de la
-    misma provincia.
+    PRIORIDAD:
+      1. Todos los registros de la misma situation_id DATEX que un ancla
+         ya vinculada al incendio.
+      2. Proximidad geográfica alrededor de un ancla.
+
+    IMPORTANTE: NO se filtra por provincia. Un incendio puede afectar
+    simultáneamente a carreteras de Huelva y Sevilla.
     """
     if not direct_matches:
         return []
@@ -993,9 +1064,27 @@ def _expand_fire_dgt_cluster(fire, direct_matches, dgt_items):
         for item in selected
     }
 
-    # 35 km permite cubrir el entorno de Niebla/Valverde sin convertir toda
-    # Huelva en un único incendio. La asociación siempre parte de un corte
-    # ya vinculado directamente a INFOCA.
+    # Primero, unir la situación DATEX completa.
+    situation_ids = {
+        normalize(item.get("situation_id", ""))
+        for item in selected
+        if normalize(item.get("situation_id", ""))
+    }
+
+    for candidate in dgt_items:
+        candidate_key = candidate.get("datex_id") or id(candidate)
+        if candidate_key in selected_keys:
+            continue
+
+        candidate_situation = normalize(
+            candidate.get("situation_id", "")
+        )
+
+        if candidate_situation and candidate_situation in situation_ids:
+            selected.append(candidate)
+            selected_keys.add(candidate_key)
+
+    # Segundo nivel: proximidad, sin exigir provincia.
     radius_km = 35.0
 
     changed = True
@@ -1005,12 +1094,6 @@ def _expand_fire_dgt_cluster(fire, direct_matches, dgt_items):
         for candidate in dgt_items:
             candidate_key = candidate.get("datex_id") or id(candidate)
             if candidate_key in selected_keys:
-                continue
-
-            if not _road_belongs_to_province(
-                candidate.get("road", ""),
-                fire.get("province", "No disponible"),
-            ):
                 continue
 
             for anchor in selected:
@@ -1028,7 +1111,6 @@ def _expand_fire_dgt_cluster(fire, direct_matches, dgt_items):
                     break
 
     return selected
-
 
 def _dgt_matches_fire(dgt_item, fire, dgt_items=None):
     """Asociación directa entre un corte INFOCAR y un incendio INFOCA."""
