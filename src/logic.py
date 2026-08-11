@@ -174,7 +174,8 @@ def format_new_incident(item):
             "",
             f"🕐 Detectado: "
             f"{_escape(_format_detected_at(item.get('detected_at')))}",
-            "Situación: <b>Corte confirmado</b>",
+            "<b>DGT:</b> <i>Confirmado</i>",
+            "<b>INFOCA:</b> <i>Confirmado</i>",
         ]
     )
 
@@ -537,14 +538,15 @@ def format_status(state):
 
 def _snapshot_key(item):
     fire = _clean(item.get("fire")).lower()
-    province = _clean(item.get("province")).lower()
     municipality = _clean(item.get("municipality")).lower()
+    province = _clean(item.get("province")).lower()
 
+    # Un incendio con nombre concreto es una única entidad aunque afecte
+    # a varias provincias.
     if fire and fire != "incendio forestal":
-        return f"name|{fire}|{province}"
+        return f"name|{fire}"
 
     return f"place|{municipality}|{province}"
-
 
 def _merge_snapshot_items(items):
     """
@@ -682,6 +684,39 @@ def format_snapshot(detected, captured_at=None):
             road_line = _format_road_line(detail)
             if road_line:
                 lines.append(road_line)
+
+        detected_at = _format_detected_at(
+            item.get("detected_at")
+        )
+
+        lines.extend(
+            [
+                "",
+                f"🕐 Detectado: {_escape(detected_at)}",
+                "<b>DGT:</b> <i>Confirmado</i>",
+                "<b>INFOCA:</b> <i>Confirmado</i>",
+            ]
+        )
+
+        sources = _official_sources(item)
+        if sources:
+            lines.extend(
+                [
+                    "",
+                    "<b>Fuentes oficiales:</b>",
+                ]
+            )
+
+            for source in sources:
+                escaped = _escape(source)
+                if re.match(r"^https?://", source, re.IGNORECASE):
+                    lines.append(
+                        f"• <a href=\"{escaped}\">{escaped}</a>"
+                    )
+                else:
+                    lines.append(
+                        f"• {escaped}"
+                    )
 
     lines.extend(
         [
