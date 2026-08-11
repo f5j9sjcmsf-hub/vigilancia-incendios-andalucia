@@ -10,14 +10,22 @@ from logic import (
     process_incidents,
     process_reopenings,
     initialize_baseline,
+    format_snapshot,
 )
 from telegram import send_message
 
 
 def _send_telegram(text, label):
     """
-    Envía un mensaje a Telegram y deja constancia en los logs.
-    No lee mensajes de usuarios, no usa getUpdates y no crea botones.
+    Envía un mensaje de salida a Telegram.
+
+    Este bot NO lee mensajes de usuarios:
+    - no usa getUpdates;
+    - no usa webhooks;
+    - no tiene botones;
+    - no procesa comandos.
+
+    Solo utiliza Telegram para enviar los avisos al chat configurado.
     """
     try:
         result = send_message(text)
@@ -27,14 +35,14 @@ def _send_telegram(text, label):
             return True
 
         print(
-            f"[TELEGRAM] {label}: respuesta inesperada de la API: "
+            f"[TELEGRAM] {label}: respuesta inesperada de Telegram: "
             f"{result!r}"
         )
         return False
 
     except Exception as exc:
         print(
-            f"[TELEGRAM] {label}: ERROR al enviar -> "
+            f"[TELEGRAM] {label}: ERROR -> "
             f"{type(exc).__name__}: {exc}"
         )
         return False
@@ -42,21 +50,26 @@ def _send_telegram(text, label):
 
 def main():
     """
-    VIGILANCIA ANDALUCÍA v19
+    VIGILANCIA ANDALUCÍA v20
 
-    - Solo salida.
-    - NO lee mensajes de Telegram.
-    - NO usa getUpdates.
-    - NO usa botones.
-    - NO procesa comandos.
-    - GitHub Actions ejecuta este archivo cada 30 minutos, 24 horas.
+    Flujo de cada ejecución:
 
-    En la primera ejecución de v19 se envía UNA sola prueba automática
-    a TELEGRAM_CHAT_ID para confirmar que Telegram funciona. Después
-    queda registrada en state.json y no vuelve a enviarse.
+    1. Consulta INFOCAR/DGT + INFOCA.
+    2. Construye la fotografía actual.
+    3. ENVÍA SIEMPRE esa fotografía a Telegram.
+    4. Si es la primera ejecución, guarda la fotografía como línea base
+       y NO genera avisos de cambios.
+    5. Si ya existe una línea base:
+       - detecta reaperturas por desaparición de una carretera;
+       - detecta nuevos cortes;
+       - actualiza la línea base con la fotografía actual.
+    6. Guarda el estado.
+
+    GitHub Actions se encarga de ejecutar este archivo cada 30 minutos,
+    las 24 horas.
     """
     print("=" * 60)
-    print("VIGILANCIA ANDALUCÍA v19")
+    print("VIGILANCIA ANDALUCÍA v20")
     print("=" * 60)
 
     state = load_state()
@@ -65,33 +78,35 @@ def main():
         state = {}
 
     # ------------------------------------------------------------
-    # 0. PRUEBA ÚNICA DE TELEGRAM
+    # 1. FOTOGRAFÍA ACTUAL
     # ------------------------------------------------------------
-    if not state.get("telegram_test_sent"):
-        print("[TELEGRAM] Ejecutando prueba única de conexión...")
+    print("[VIGILANCIA] Consultando INFOCAR/DGT + INFOCA...")
 
-        sent = _send_telegram(
-            (
-                "🤖 <b>🔥IIFF Andalucía</b>\n\n"
-                "Conexión con Telegram confirmada correctamente.\n\n"
-                "La vigilancia está funcionando en modo automático "
-                "y sin botones ni comandos.\n"
-                "Se comprobarán las carreteras cada 30 minutos."
-            ),
-            "Prueba inicial",
-        )
+    detected = fetch_official_incidents()
 
-        if sent:
-            state["telegram_test_sent"] = True
-            save_state(state)
-        else:
-            print(
-                "[TELEGRAM] La prueba NO se ha podido enviar. "
-                "Revisar el error anterior."
-            )
+    captured_at = datetime.now(TIMEZONE).isoformat()
+
+    print(
+        "[VIGILANCIA] Incidentes en la fotografía actual: "
+        f"{len(detected)}"
+    )
 
     # ------------------------------------------------------------
-    # 1. LÍNEA BASE INICIAL
+    # 2. ENVIAR SIEMPRE LA FOTOGRAFÍA
+    # ------------------------------------------------------------
+    snapshot = format_snapshot(
+        detected,
+        captured_at,
+    )
+
+    print("[TELEGRAM] Enviando fotografía de estado...")
+    _send_telegram(
+        snapshot,
+        "Fotografía de estado",
+    )
+
+    # ------------------------------------------------------------
+    # 3. PRIMERA EJECUCIÓN -> CREAR LÍNEA BASE
     # ------------------------------------------------------------
     state.setdefault(
         "monitoring_initialized",
@@ -99,9 +114,10 @@ def main():
     )
 
     if not state.get("monitoring_initialized"):
-        print("[VIGILANCIA] Primera ejecución: creando línea base.")
-
-        detected = fetch_official_incidents()
+        print(
+            "[VIGILANCIA] Primera ejecución: "
+            "creando línea base."
+        )
 
         initialize_baseline(
             state,
@@ -109,33 +125,28 @@ def main():
         )
 
         state["monitoring_initialized"] = True
-        state["last_run"] = datetime.now(TIMEZONE).isoformat()
+        state["baseline_at"] = captured_at
+        state["last_run"] = captured_at
+        state["last_snapshot_at"] = captured_at
 
         save_state(state)
 
         print(
             "[VIGILANCIA] Línea base creada. "
-            "No se envían avisos de cortes existentes."
+            "No se generan avisos de cambios en esta ejecución."
         )
         print("=" * 60)
         return
 
     # ------------------------------------------------------------
-    # 2. FOTOGRAFÍA ACTUAL
+    # 4. REAPERTURAS
     # ------------------------------------------------------------
-    print("[VIGILANCIA] Consultando fuentes oficiales...")
-
-    detected = fetch_official_incidents()
-
+    # Se comprueban antes de process_incidents(), porque aquí todavía
+    # tenemos disponible la fotografía anterior en state.
     print(
-        "[VIGILANCIA] Incidentes detectados en la fotografía actual: "
-        f"{len(detected)}"
+        "[VIGILANCIA] Comparando con la fotografía anterior "
+        "para detectar reaperturas..."
     )
-
-    # ------------------------------------------------------------
-    # 3. REAPERTURAS
-    # ------------------------------------------------------------
-    print("[VIGILANCIA] Comprobando posibles reaperturas...")
 
     reopenings = fetch_official_reopenings(
         state,
@@ -143,7 +154,7 @@ def main():
     )
 
     print(
-        "[VIGILANCIA] Posibles reaperturas detectadas: "
+        "[VIGILANCIA] Reaperturas detectadas: "
         f"{len(reopenings)}"
     )
 
@@ -158,9 +169,12 @@ def main():
         )
 
     # ------------------------------------------------------------
-    # 4. NUEVOS CORTES / NUEVOS CIERRES
+    # 5. NUEVOS CORTES / RECIERRES
     # ------------------------------------------------------------
-    print("[VIGILANCIA] Comprobando nuevos cortes...")
+    print(
+        "[VIGILANCIA] Comparando con la fotografía anterior "
+        "para detectar nuevos cortes..."
+    )
 
     incident_messages = process_incidents(
         state,
@@ -168,7 +182,7 @@ def main():
     )
 
     print(
-        "[VIGILANCIA] Avisos de nuevos cortes: "
+        "[VIGILANCIA] Nuevos avisos de corte: "
         f"{len(incident_messages)}"
     )
 
@@ -180,14 +194,18 @@ def main():
         )
 
     # ------------------------------------------------------------
-    # 5. GUARDAR ESTADO
+    # 6. GUARDAR LA NUEVA FOTOGRAFÍA COMO REFERENCIA
     # ------------------------------------------------------------
-    state["last_run"] = datetime.now(TIMEZONE).isoformat()
     state["monitoring_initialized"] = True
+    state["last_run"] = captured_at
+    state["last_snapshot_at"] = captured_at
 
     save_state(state)
 
-    print("[VIGILANCIA] Estado guardado correctamente.")
+    print(
+        "[VIGILANCIA] Fotografía actual guardada como "
+        "referencia para la siguiente ejecución."
+    )
     print("[VIGILANCIA] Comprobación finalizada.")
     print("=" * 60)
 
