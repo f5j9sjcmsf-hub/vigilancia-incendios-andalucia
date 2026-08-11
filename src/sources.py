@@ -243,80 +243,159 @@ def _clean_km(value):
     return match.group(1).replace(",", ".")
 
 
-def _datex_km_range(record):
+def _numeric_values_from_element(element):
     """
-    Extrae TODOS los PK publicados explícitamente por DATEX II.
+    Extrae valores numéricos de un elemento DATEX de PK.
 
-    No utiliza coordenadas ni números de localización. Se buscan tanto
-    campos de inicio/fin como campos de PK individuales y se conserva
-    todo lo publicado para poder reconstruir, por ejemplo, PK 4.5–31.8.
+    DGT documenta ``kilometerPoint`` como el campo utilizado para el PK.
+    Dependiendo de la publicación/version del XML, el valor puede aparecer
+    como texto del elemento o, excepcionalmente, dentro de un atributo.
+    Aquí solo se inspeccionan elementos que ya han sido identificados como
+    campos de PK; NO se recorren números arbitrarios del XML.
     """
-    field_names = (
-        "kilometerPoint",
-        "kilometrePoint",
-        "kilometricPoint",
-        "pk",
-        "fromKilometerPoint",
-        "fromKilometrePoint",
-        "fromKilometricPoint",
-        "startKilometerPoint",
-        "startKilometrePoint",
-        "startKilometricPoint",
-        "startKm",
-        "fromPk",
-        "toKilometerPoint",
-        "toKilometrePoint",
-        "toKilometricPoint",
-        "endKilometerPoint",
-        "endKilometrePoint",
-        "endKilometricPoint",
-        "endKm",
-        "toPk",
-    )
-
     values = []
 
-    for element in record.iter():
-        local = element.tag.rsplit("}", 1)[-1].lower()
+    texts = []
+    if element.text:
+        texts.append(normalize(element.text))
 
-        if local not in {name.lower() for name in field_names}:
-            continue
+    # Algunos serializadores pueden representar el valor en un atributo.
+    for attr_value in element.attrib.values():
+        value = normalize(attr_value)
+        if value:
+            texts.append(value)
 
-        text = normalize(" ".join(element.itertext()))
+    for text in texts:
         if not text:
             continue
 
-        # Aceptamos números explícitos dentro de un campo DATEX de PK.
-        for match in re.findall(
+        matches = re.findall(
             r"(?<![\d.-])(\d+(?:[.,]\d+)?)(?![\d.-])",
             text,
-        ):
+        )
+
+        for match in matches:
             try:
                 value = float(match.replace(",", "."))
             except ValueError:
                 continue
 
+            # Los PK de carretera de España no necesitan valores de este
+            # orden de magnitud. Este límite evita coordenadas/IDs accidentales.
             if 0 <= value <= 1000:
                 values.append(value)
 
-    # Compatibilidad con algunas publicaciones que usan from/to como
-    # números puros.
-    for name in ("from", "to"):
+    return values
+
+
+def _datex_km_range(record):
+    """
+    Extrae TODOS los PK publicados explícitamente por DATEX II.
+
+    V24 corrige la extracción que estaba fallando en V23. La DGT documenta
+    que la localización puede incluir un ``kilometerPoint`` y que los puntos
+    de referencia se definen mediante la pareja carretera-PK. Por ello se
+    buscan de forma explícita las variantes de los campos kilométricos
+    dentro del ``situationRecord``.
+
+    NO se utilizan coordenadas, números de IDs, fechas ni números de
+    carreteras para fabricar un PK.
+    """
+    field_names = {
+        "kilometerpoint",
+        "kilometrepoint",
+        "kilometricpoint",
+        "kilometerpointstart",
+        "kilometerpointend",
+        "startkilometerpoint",
+        "endkilometerpoint",
+        "fromkilometerpoint",
+        "tokilometerpoint",
+        "startkilometrepoint",
+        "endkilometrepoint",
+        "fromkilometrepoint",
+        "tokilometrepoint",
+        "startkilometricpoint",
+        "endkilometricpoint",
+        "fromkilometricpoint",
+        "tokilometricpoint",
+        "startkm",
+        "endkm",
+        "fromkm",
+        "tokm",
+        "frompk",
+        "topk",
+        "pk",
+        "puntoquilometrico",
+        "puntokilometrico",
+        "kilometropunto",
+    }
+
+    values = []
+    matched_tags = []
+
+    for element in record.iter():
+        local = element.tag.rsplit("}", 1)[-1].lower()
+
+        # Primera prioridad: nombres oficiales/esperables de PK.
+        is_pk_field = local in field_names
+
+        # Segunda prioridad: extensiones cuyo nombre contiene claramente
+        # kilometro/kilometre/kilometric y punto/pk.
+        if not is_pk_field:
+            has_km_word = any(
+                token in local
+                for token in (
+                    "kilometer",
+                    "kilometre",
+                    "kilometric",
+                    "kilometro",
+                )
+            )
+            is_pk_field = has_km_word and (
+                "point" in local
+                or "punto" in local
+                or local.endswith("km")
+            )
+
+        if not is_pk_field:
+            continue
+
+        element_values = _numeric_values_from_element(element)
+        if element_values:
+            values.extend(element_values)
+            matched_tags.append(local)
+
+    # Compatibilidad adicional con publicaciones que representan los
+    # extremos como elementos <from>/<to> pero únicamente si el contenido
+    # es inequívocamente un PK numérico.
+    for name in ("from", "to", "start", "end"):
         for element in record.iter():
             local = element.tag.rsplit("}", 1)[-1].lower()
             if local != name:
                 continue
 
             text = normalize(" ".join(element.itertext()))
+            if not text:
+                continue
+
+            # Solo aceptamos el formato explícito de PK; no cualquier número.
             if re.fullmatch(
                 r"(?:PK\s*)?\d+(?:[.,]\d+)?",
                 text,
                 re.IGNORECASE,
             ):
                 try:
-                    values.append(float(text.replace(",", ".")))
+                    value = float(
+                        re.sub(r"^PK\s*", "", text, flags=re.IGNORECASE)
+                        .replace(",", ".")
+                    )
                 except ValueError:
-                    pass
+                    continue
+
+                if 0 <= value <= 1000:
+                    values.append(value)
+                    matched_tags.append(local)
 
     values = sorted(
         set(round(value, 6) for value in values)
