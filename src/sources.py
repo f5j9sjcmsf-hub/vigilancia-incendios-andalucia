@@ -1280,93 +1280,319 @@ _LAST_DGT_OK = False
 # API UTILIZADA POR main.py
 # ============================================================
 
+def _fire_metadata_score(dgt_item, fire, dgt_items):
+    """
+    Puntúa una posible relación entre un registro INFOCAR y una ficha
+    INFOCA. INFOCAR sigue siendo la fuente que decide si existe un corte.
+
+    La ficha INFOCA SOLO aporta:
+      - nombre del incendio;
+      - municipio;
+      - provincia;
+      - URLs oficiales.
+
+    Las carreteras y PK del resultado final proceden exclusivamente de
+    INFOCAR/DGT.
+    """
+    score = 0
+
+    road = normalize_road(dgt_item.get("road", ""))
+    province = normalize(fire.get("province", "")).lower()
+    municipality = normalize(fire.get("municipality", "")).lower()
+
+    fire_roads = {
+        normalize_road(value)
+        for value in fire.get("roads", [])
+        if normalize_road(value)
+    }
+
+    # Coincidencia exacta de carretera mencionada por INFOCA.
+    if road and road in fire_roads:
+        score += 100
+
+    location = normalize(
+        dgt_item.get("location_text", "")
+    ).lower()
+
+    if (
+        municipality
+        and municipality != "no disponible"
+        and municipality in location
+    ):
+        score += 80
+
+    # Una misma situation DATEX suele contener todos los cortes derivados
+    # de una misma incidencia. Si una de sus carreteras ya está vinculada
+    # directamente a este incendio, heredamos la relación.
+    situation_id = normalize(
+        dgt_item.get("situation_id", "")
+    )
+
+    if situation_id:
+        for other in dgt_items:
+            if other is dgt_item:
+                continue
+
+            if normalize(other.get("situation_id", "")) != situation_id:
+                continue
+
+            other_road = normalize_road(
+                other.get("road", "")
+            )
+
+            if other_road in fire_roads:
+                score += 70
+                break
+
+            other_location = normalize(
+                other.get("location_text", "")
+            ).lower()
+
+            if (
+                municipality
+                and municipality != "no disponible"
+                and municipality in other_location
+            ):
+                score += 60
+                break
+
+    # Prefijo provincial como pequeña evidencia adicional.
+    if province and province != "no disponible":
+        if _road_belongs_to_province(road, fire.get("province", "")):
+            score += 10
+
+    return score
+
+
+def _canonical_fire_key(fire):
+    """
+    Identidad estable del incendio.
+
+    Se prioriza el nombre que proporciona INFOCA. Si el nombre no está
+    disponible se usa municipio + provincia.
+    """
+    fire_name = normalize(
+        fire.get("fire", "")
+    ).lower()
+
+    municipality = normalize(
+        fire.get("municipality", "")
+    ).lower()
+
+    province = normalize(
+        fire.get("province", "")
+    ).lower()
+
+    if fire_name and fire_name != "incendio forestal":
+        return f"name|{fire_name}|{province}"
+
+    return f"place|{municipality}|{province}"
+
+
+def _merge_fire_metadata(base, candidate):
+    """
+    Fusiona únicamente METADATOS INFOCA. Nunca fusiona carreteras de
+    noticias: las carreteras finales se obtienen después exclusivamente
+    de los registros INFOCAR seleccionados.
+    """
+    result = dict(base or {})
+
+    for field in (
+        "fire",
+        "province",
+        "municipality",
+        "source_url",
+        "source_title",
+    ):
+        current = normalize(result.get(field, ""))
+        incoming = normalize(candidate.get(field, ""))
+
+        if (
+            not current
+            or current.lower() == "no disponible"
+            or current.lower() == "incendio forestal"
+        ) and incoming:
+            result[field] = candidate.get(field)
+
+    urls = []
+    for value in (
+        result.get("source_urls", [])
+        or [result.get("source_url", "")]
+    ):
+        value = normalize(value)
+        if value and value not in urls:
+            urls.append(value)
+
+    for value in (
+        candidate.get("source_urls", [])
+        or [candidate.get("source_url", "")]
+    ):
+        value = normalize(value)
+        if value and value not in urls:
+            urls.append(value)
+
+    result["source_urls"] = urls
+    if urls:
+        result["source_url"] = urls[0]
+
+    return result
+
+
 def fetch_official_incidents():
     """
-    REGLA PRINCIPAL:
+    FUENTE DE VERDAD PARA LOS CORTES: INFOCAR/DGT DATEX II.
 
-    1. INFOCAR/DGT debe confirmar forestFire + roadClosed.
-    2. INFOCA/Junta debe identificar el incendio y asociarlo.
-    3. Las noticias NO crean cortes por sí mismas.
-    4. Los distintos registros DGT del mismo incendio se agrupan
-       en un único aviso.
+    REGLA FUNDAMENTAL DE ESTA VERSIÓN:
+
+      - Una carretera SOLO puede entrar en ``detected`` si aparece en
+        INFOCAR/DGT como forestFire + roadClosed.
+      - Las noticias INFOCA/Junta JAMÁS crean carreteras cortadas.
+      - Las carreteras y sus PK del resultado final proceden únicamente
+        de los registros DATEX.
+      - INFOCA/Junta solo se consulta para obtener el nombre del incendio,
+        municipio, provincia y fuentes oficiales.
+      - Varias noticias del mismo incendio no producen varios incidentes.
+      - Varios registros DATEX del mismo incendio se consolidan en UNA
+        sola incidencia y se agrupan por carretera conservando sus PK.
+
+    Por tanto, si una noticia menciona cinco carreteras pero INFOCAR solo
+    publica tres, el resultado contiene SOLO esas tres.
     """
     global _LAST_DGT_ITEMS, _LAST_DGT_OK
 
-    # Una única fotografía de INFOCAR/DGT por ejecución.
     dgt_items, dgt_ok = _fetch_datex_closures_with_status()
+
     _LAST_DGT_ITEMS = list(dgt_items)
     _LAST_DGT_OK = bool(dgt_ok)
 
-    if not dgt_ok:
+    if not dgt_ok or not dgt_items:
         return []
 
-    if not dgt_items:
-        return []
-
+    # INFOCA es exclusivamente una fuente de METADATOS.
     fires = fetch_infoca_fires()
 
     if not fires:
-        # Seguridad: no alertamos de un corte por incendio
-        # si no podemos vincularlo a un incendio INFOCA/Junta.
+        # No inventamos nombre/municipio ni convertimos noticias en cortes.
         return []
 
-    grouped = {}
+    # ------------------------------------------------------------
+    # 1. Elegir el incendio INFOCA que mejor explica cada registro DGT.
+    # ------------------------------------------------------------
+    assignments = {}
 
-    for fire in fires:
-        direct_matches = [
-            item
-            for item in dgt_items
-            if _dgt_matches_fire(
-                item,
+    for dgt_item in dgt_items:
+        candidates = []
+
+        for fire in fires:
+            score = _fire_metadata_score(
+                dgt_item,
                 fire,
                 dgt_items,
             )
-        ]
 
-        matched = _expand_fire_dgt_cluster(
+            if score > 0:
+                candidates.append(
+                    (
+                        score,
+                        _canonical_fire_key(fire),
+                        fire,
+                    )
+                )
+
+        if not candidates:
+            # Corte DGT sin correspondencia INFOCA suficientemente clara.
+            # Se descarta por seguridad.
+            continue
+
+        candidates.sort(
+            key=lambda value: (
+                value[0],
+                value[1],
+            ),
+            reverse=True,
+        )
+
+        score, fire_key, fire = candidates[0]
+
+        # Exigencia mínima: carretera INFOCA exacta, municipio o situación
+        # DATEX vinculada. La mera provincia NO es suficiente.
+        if score < 60:
+            continue
+
+        assignments.setdefault(
+            fire_key,
+            {
+                "fire": fire,
+                "dgt": [],
+            },
+        )
+
+        assignments[fire_key]["dgt"].append(dgt_item)
+
+    # ------------------------------------------------------------
+    # 2. Consolidar por incendio INFOCA.
+    # ------------------------------------------------------------
+    incidents = []
+
+    for group in assignments.values():
+        fire = group["fire"]
+        dgt_group = group["dgt"]
+
+        # Ampliación conservadora: una vez tenemos un ancla DGT ↔ INFOCA,
+        # podemos incorporar otros registros DATEX de la misma situation
+        # o próximos al ancla, incluso aunque su carretera no aparezca en
+        # la noticia. Esto permite incendios que afectan a otra provincia.
+        anchors = list(dgt_group)
+
+        expanded = _expand_fire_dgt_cluster(
             fire,
-            direct_matches,
+            anchors,
             dgt_items,
         )
 
-        if not matched:
-            continue
-
-        key = _group_key(fire)
-
-        if key not in grouped:
-            grouped[key] = {
-                "fire": fire,
-                "dgt": [],
-            }
-
-        existing_ids = {
+        # Solo añadimos registros que no entren ya en el grupo.
+        known_ids = {
             item.get("datex_id")
-            for item in grouped[key]["dgt"]
+            for item in dgt_group
             if item.get("datex_id")
         }
 
-        for item in matched:
+        for item in expanded:
             item_id = item.get("datex_id")
 
-            if item_id and item_id in existing_ids:
+            if item_id and item_id in known_ids:
                 continue
 
-            grouped[key]["dgt"].append(item)
+            # Si no tiene ID, usamos carretera + PK + situation como
+            # identidad suficientemente estable.
+            if not item_id:
+                signature = (
+                    normalize_road(item.get("road", "")),
+                    normalize(item.get("section", "")),
+                    normalize(item.get("situation_id", "")),
+                )
 
-    incidents = []
+                if any(
+                    (
+                        normalize_road(existing.get("road", "")),
+                        normalize(existing.get("section", "")),
+                        normalize(existing.get("situation_id", "")),
+                    ) == signature
+                    for existing in dgt_group
+                ):
+                    continue
 
-    for group in grouped.values():
-        item = _merge_dgt_into_fire(
-            group["fire"],
-            group["dgt"],
+            dgt_group.append(item)
+
+        merged = _merge_dgt_into_fire(
+            fire,
+            dgt_group,
         )
 
-        if item:
-            incidents.append(item)
+        if merged:
+            incidents.append(merged)
 
     return incidents
-
 
 def _road_is_active_in_infocar(road, active_dgt):
     """True si INFOCAR sigue mostrando esa carretera como cortada."""
