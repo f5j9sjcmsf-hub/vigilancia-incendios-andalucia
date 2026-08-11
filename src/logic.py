@@ -535,22 +535,99 @@ def format_status(state):
     return "\n".join(lines)
 
 
+def _snapshot_key(item):
+    fire = _clean(item.get("fire")).lower()
+    province = _clean(item.get("province")).lower()
+    municipality = _clean(item.get("municipality")).lower()
+
+    if fire and fire != "incendio forestal":
+        return f"name|{fire}|{province}"
+
+    return f"place|{municipality}|{province}"
+
+
+def _merge_snapshot_items(items):
+    """
+    Consolida defensivamente la fotografía antes de mostrarla.
+
+    Las carreteras siguen siendo las que ya vienen de INFOCAR; aquí solo
+    evitamos que una variación de metadatos INFOCA produzca dos informes
+    visuales del mismo incendio.
+    """
+    groups = {}
+
+    for item in items or []:
+        key = _snapshot_key(item)
+
+        if key not in groups:
+            groups[key] = dict(item)
+            groups[key]["road_details"] = []
+            continue
+
+        current = groups[key]
+
+        for field in (
+            "fire",
+            "province",
+            "municipality",
+            "source_url",
+            "source_title",
+        ):
+            current_value = _clean(current.get(field))
+            incoming_value = _clean(item.get(field))
+
+            if (
+                not current_value
+                or current_value.lower() == "no disponible"
+                or current_value.lower() == "incendio forestal"
+            ) and incoming_value:
+                current[field] = item.get(field)
+
+        existing = {
+            (
+                _clean(detail.get("road")).lower(),
+                _clean(detail.get("section")).lower(),
+                _clean(detail.get("direction")).lower(),
+            )
+            for detail in current.get("road_details", [])
+            if isinstance(detail, dict)
+        }
+
+        for detail in _road_details(item):
+            key_detail = (
+                _clean(detail.get("road")).lower(),
+                _clean(detail.get("section")).lower(),
+                _clean(detail.get("direction")).lower(),
+            )
+
+            if not key_detail[0] or key_detail in existing:
+                continue
+
+            current["road_details"].append(detail)
+            existing.add(key_detail)
+
+        current["road"] = ", ".join(
+            detail.get("road", "")
+            for detail in current["road_details"]
+            if detail.get("road")
+        )
+
+    return list(groups.values())
+
+
 def format_snapshot(detected, captured_at=None):
     """
-    Genera la fotografía/estado actual de la vigilancia.
+    Genera la fotografía actual.
 
-    Esta función NO modifica el estado y NO genera eventos.
-    Solo representa exactamente la fotografía obtenida en esta ejecución.
-
-    Se envía en cada ejecución para que podamos comprobar visualmente
-    qué está viendo el sistema y, al mismo tiempo, usar esa fotografía
-    como referencia para la siguiente ejecución.
+    IMPORTANTE:
+    Las carreteras que se muestran aquí proceden de INFOCAR/DGT.
+    INFOCA solo aporta el nombre/municipio/provincia.
     """
     captured = _format_detected_at(
         captured_at or datetime.now().isoformat()
     )
 
-    items = detected or []
+    items = _merge_snapshot_items(detected)
 
     lines = [
         "<b>📸 ESTADO ACTUAL — INFOCAR + INFOCA</b>",
@@ -572,7 +649,7 @@ def format_snapshot(detected, captured_at=None):
         return "\n".join(lines)
 
     lines.append(
-        f"🚧 <b>Carreteras/incidentes activos: {len(items)}</b>"
+        f"🚧 <b>Incendios con carreteras cortadas: {len(items)}</b>"
     )
 
     for index, item in enumerate(items, start=1):
@@ -591,6 +668,7 @@ def format_snapshot(detected, captured_at=None):
                 "",
                 f"<b>{index}. {fire}</b>",
                 f"📍 {municipality} ({province})",
+                "<b>🚧 CARRETERAS AFECTADAS</b>",
             ]
         )
 
@@ -608,9 +686,9 @@ def format_snapshot(detected, captured_at=None):
     lines.extend(
         [
             "",
-            "ℹ️ Esta es la fotografía de esta ejecución.",
-            "La siguiente ejecución se comparará con ella para "
-            "detectar nuevos cortes y reaperturas.",
+            "ℹ️ Las carreteras y PK proceden de INFOCAR/DGT.",
+            "INFOCA se utiliza únicamente para identificar el incendio.",
+            "La siguiente ejecución se comparará con esta fotografía.",
         ]
     )
 
