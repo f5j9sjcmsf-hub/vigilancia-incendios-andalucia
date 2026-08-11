@@ -179,28 +179,6 @@ def format_new_incident(item):
         ]
     )
 
-    sources = _official_sources(item)
-
-    if sources:
-        lines.extend(
-            [
-                "",
-                "Fuentes oficiales:",
-            ]
-        )
-
-        for source in sources:
-            escaped = _escape(source)
-
-            if re.match(r"^https?://", source, re.IGNORECASE):
-                lines.append(
-                    f"• <a href=\"{escaped}\">{escaped}</a>"
-                )
-            else:
-                lines.append(
-                    f"• {escaped}"
-                )
-
     lines.extend(
         [
             "",
@@ -634,7 +612,7 @@ def format_snapshot(detected, captured_at=None):
     lines = [
         "<b>📸 ESTADO ACTUAL — INFOCAR + INFOCA</b>",
         "",
-        f"🕐 Fotografía: <b>{_escape(captured)}</b>",
+        f"🕐 Actualización: <b>{_escape(captured)}</b>",
         "",
     ]
 
@@ -698,32 +676,12 @@ def format_snapshot(detected, captured_at=None):
             ]
         )
 
-        sources = _official_sources(item)
-        if sources:
-            lines.extend(
-                [
-                    "",
-                    "<b>Fuentes oficiales:</b>",
-                ]
-            )
-
-            for source in sources:
-                escaped = _escape(source)
-                if re.match(r"^https?://", source, re.IGNORECASE):
-                    lines.append(
-                        f"• <a href=\"{escaped}\">{escaped}</a>"
-                    )
-                else:
-                    lines.append(
-                        f"• {escaped}"
-                    )
-
     lines.extend(
         [
             "",
             "ℹ️ Las carreteras y PK proceden de INFOCAR/DGT.",
             "INFOCA se utiliza únicamente para identificar el incendio.",
-            "La siguiente ejecución se comparará con esta fotografía.",
+            "La siguiente ejecución se comparará con esta actualización.",
         ]
     )
 
