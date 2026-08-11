@@ -533,3 +533,85 @@ def format_status(state):
             lines.append(f"• {_escape(road)}")
 
     return "\n".join(lines)
+
+
+def format_snapshot(detected, captured_at=None):
+    """
+    Genera la fotografía/estado actual de la vigilancia.
+
+    Esta función NO modifica el estado y NO genera eventos.
+    Solo representa exactamente la fotografía obtenida en esta ejecución.
+
+    Se envía en cada ejecución para que podamos comprobar visualmente
+    qué está viendo el sistema y, al mismo tiempo, usar esa fotografía
+    como referencia para la siguiente ejecución.
+    """
+    captured = _format_detected_at(
+        captured_at or datetime.now().isoformat()
+    )
+
+    items = detected or []
+
+    lines = [
+        "<b>📸 ESTADO ACTUAL — INFOCAR + INFOCA</b>",
+        "",
+        f"🕐 Fotografía: <b>{_escape(captured)}</b>",
+        "",
+    ]
+
+    if not items:
+        lines.extend(
+            [
+                "🟢 <b>No constan carreteras cortadas por incendio "
+                "en la fotografía actual.</b>",
+                "",
+                "Esta fotografía queda guardada como referencia "
+                "para la siguiente comprobación.",
+            ]
+        )
+        return "\n".join(lines)
+
+    lines.append(
+        f"🚧 <b>Carreteras/incidentes activos: {len(items)}</b>"
+    )
+
+    for index, item in enumerate(items, start=1):
+        fire = _escape(
+            item.get("fire") or "Incendio forestal"
+        )
+        municipality = _escape(
+            item.get("municipality") or "No disponible"
+        )
+        province = _escape(
+            item.get("province") or "No disponible"
+        )
+
+        lines.extend(
+            [
+                "",
+                f"<b>{index}. {fire}</b>",
+                f"📍 {municipality} ({province})",
+            ]
+        )
+
+        details = _road_details(item)
+
+        if not details:
+            lines.append("• No hay carreteras detalladas.")
+            continue
+
+        for detail in details:
+            road_line = _format_road_line(detail)
+            if road_line:
+                lines.append(road_line)
+
+    lines.extend(
+        [
+            "",
+            "ℹ️ Esta es la fotografía de esta ejecución.",
+            "La siguiente ejecución se comparará con ella para "
+            "detectar nuevos cortes y reaperturas.",
+        ]
+    )
+
+    return "\n".join(lines)
