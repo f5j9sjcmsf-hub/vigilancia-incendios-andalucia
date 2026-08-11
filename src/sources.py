@@ -29,7 +29,7 @@ DGT_URLS = (
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 "
-        "(compatible; VigilanciaIncendiosAndalucia/3.0)"
+        "(compatible; VigilanciaIncendiosAndalucia/3.1)"
     )
 }
 
@@ -378,161 +378,137 @@ def _location_debug(record):
     return " || ".join(interesting)
 
 
-def _datex_km_range(record):
+def _datex_km_values(record):
     """
-    Extrae PK de las distintas representaciones de localización que puede
-    utilizar INFOCAR/DGT.
+    Extrae TODOS los PK disponibles en el registro DATEX.
 
-    ORDEN DE PRIORIDAD:
-      1. kilometerPoint y variantes de la extensión española.
-      2. Referencias lineales DATEX (fromReferent/toReferent).
-      3. Campos from/to que contengan explícitamente PK/km.
-      4. Textos de localización que indiquen explícitamente PK/km.
+    INFOCAR/DGT puede publicar el PK mediante:
+      - kilometerPoint / kilometrePoint / kilometricPoint
+      - pk
+      - from / to
+      - fromKilometerPoint / toKilometerPoint
+      - variantes start/end
 
-    Nunca utiliza coordenadas ni números arbitrarios del XML.
+    Se buscan estos campos en cualquier nivel del registro para soportar
+    namespaces y las distintas estructuras de publicación DATEX.
     """
     values = []
-    elements = list(record.iter())
 
-    # ------------------------------------------------------------
-    # 1. Extensiones españolas explícitas de PK.
-    # ------------------------------------------------------------
-    pk_names = {
-        "kilometerpoint",
-        "kilometrepoint",
-        "kilometricpoint",
-        "kilometerpointstart",
-        "kilometerpointend",
-        "startkilometerpoint",
-        "endkilometerpoint",
-        "fromkilometerpoint",
-        "tokilometerpoint",
-        "startkilometrepoint",
-        "endkilometrepoint",
-        "fromkilometrepoint",
-        "tokilometrepoint",
-        "startkilometricpoint",
-        "endkilometricpoint",
-        "fromkilometricpoint",
-        "tokilometricpoint",
-        "puntoquilometrico",
-        "puntokilometrico",
-        "kilometropunto",
-    }
-
-    for element in elements:
-        local = element.tag.rsplit("}", 1)[-1].lower()
-        if local not in pk_names:
-            continue
-
-        values.extend(_numeric_from_text(element.text or ""))
-        for attr_value in element.attrib.values():
-            values.extend(_numeric_from_text(attr_value))
-
-    # ------------------------------------------------------------
-    # 2. DATEX estándar: referentIdentifier de referenceMarker.
-    # ------------------------------------------------------------
-    # Se examinan los bloques de localización completos para conservar el
-    # contexto entre referentIdentifier y referentType.
-    linear_blocks = {
-        "pointalonglinearelement",
-        "linearwithinlinearelement",
-        "frompoint",
-        "topoint",
-        "distancealonglinearelement",
-        "distancefromlinearelementreferent",
-    }
-
-    for block in elements:
-        local = block.tag.rsplit("}", 1)[-1].lower()
-        if local not in linear_blocks:
-            continue
-
-        block_text = normalize(" ".join(block.itertext()))
-        has_reference_marker = bool(
-            re.search(
-                r"referenceMarker|reference marker|kilopost|kilometre[- ]?post|kilometer[- ]?post",
-                block_text,
-                re.IGNORECASE,
-            )
-        )
-
-        # En algunas publicaciones el tipo de referent aparece como un
-        # elemento hermano de referentIdentifier. Lo comprobamos de forma
-        # explícita para no perder el PK por diferencias de serialización.
-        for child in block.iter():
-            child_local = child.tag.rsplit("}", 1)[-1].lower()
-            if child_local in ("referenttype", "referencetype"):
-                if re.search(
-                    r"referenceMarker|reference marker|kilopost|kilometre[- ]?post|kilometer[- ]?post",
-                    normalize(" ".join(child.itertext())),
-                    re.IGNORECASE,
-                ):
-                    has_reference_marker = True
-
-        for child in block.iter():
-            child_local = child.tag.rsplit("}", 1)[-1].lower()
-            if child_local != "referentidentifier":
-                continue
-
-            raw = normalize(child.text or "")
-            if not raw:
-                continue
-
-            # Si el bloque identifica explícitamente el referent como
-            # referenceMarker, el identificador es el PR/PK de referencia.
-            if has_reference_marker:
-                values.extend(_numeric_from_text(raw))
-                continue
-
-            # Compatibilidad con publicaciones que no incluyen referentType
-            # pero usan un identificador puramente numérico.
-            if re.fullmatch(r"\d+(?:[.,]\d+)?", raw):
-                values.extend(_numeric_from_text(raw))
-
-    # ------------------------------------------------------------
-    # 3. from/to y campos de localización con PK explícito.
-    # ------------------------------------------------------------
-    explicit_names = {
-        "from",
-        "to",
-        "start",
-        "end",
-        "frompoint",
-        "topoint",
-        "locationdescription",
-        "supplementarypositionaldescription",
-        "descriptor",
-        "roadsection",
-        "locationtext",
-    }
-
-    for element in elements:
-        local = element.tag.rsplit("}", 1)[-1].lower()
-        if local not in explicit_names:
-            continue
-
-        text = normalize(" ".join(element.itertext()))
-        values.extend(_explicit_pk_values(text))
-
-    # ------------------------------------------------------------
-    # 4. Último recurso seguro: texto completo del registro, pero SOLO
-    # cuando el número lleva delante una marca inequívoca de PK/km/PR.
-    # ------------------------------------------------------------
-    values.extend(_explicit_pk_values(" ".join(record.itertext())))
-
-    values = sorted(
-        set(
-            round(value, 6)
-            for value in values
-            if 0 <= value <= 1000
-        )
+    field_names = (
+        "kilometerPoint",
+        "kilometrePoint",
+        "kilometricPoint",
+        "pk",
+        "fromKilometerPoint",
+        "toKilometerPoint",
+        "fromKilometrePoint",
+        "toKilometrePoint",
+        "fromKilometricPoint",
+        "toKilometricPoint",
+        "startKilometerPoint",
+        "endKilometerPoint",
+        "startKilometrePoint",
+        "endKilometrePoint",
+        "startKilometricPoint",
+        "endKilometricPoint",
+        "startKm",
+        "endKm",
+        "fromPk",
+        "toPk",
     )
+
+    for name in field_names:
+        for node in record.iter():
+            local = node.tag.rsplit("}", 1)[-1].split(":", 1)[-1].lower()
+            if local != name.lower():
+                continue
+
+            text = normalize(" ".join(node.itertext()))
+            if not text:
+                text = normalize(node.text or "")
+
+            if not text:
+                continue
+
+            for match in re.findall(
+                r"(?<![\d.-])(\d+(?:[.,]\d+)?)(?![\d.-])",
+                text,
+            ):
+                try:
+                    value = float(match.replace(",", "."))
+                except ValueError:
+                    continue
+
+                if 0 <= value <= 1000:
+                    values.append(value)
+
+    # Algunas publicaciones DATEX representan los extremos simplemente
+    # como <from>4.5</from> y <to>31.8</to>. Solo aceptamos estos campos
+    # cuando su contenido es EXCLUSIVAMENTE un PK/número.
+    for name in ("from", "to"):
+        for node in record.iter():
+            local = node.tag.rsplit("}", 1)[-1].split(":", 1)[-1].lower()
+            if local != name:
+                continue
+
+            text = normalize(" ".join(node.itertext()))
+            if not re.fullmatch(
+                r"(?:PK\s*)?\d+(?:[.,]\d+)?",
+                text,
+                re.IGNORECASE,
+            ):
+                continue
+
+            value_text = re.sub(
+                r"^PK\s*",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            )
+
+            try:
+                value = float(value_text.replace(",", "."))
+            except ValueError:
+                continue
+
+            if 0 <= value <= 1000:
+                values.append(value)
+
+    return sorted(set(round(value, 6) for value in values))
+
+
+def _datex_km_range(record):
+    """
+    Devuelve (desde, hasta) a partir de todos los PK publicados por INFOCAR.
+
+    Si el registro contiene un único PK, devuelve ese punto.
+    Si contiene dos o más PK, devuelve el mínimo y el máximo.
+    """
+    values = _datex_km_values(record)
 
     if len(values) >= 2:
         return _format_pk_value(values[0]), _format_pk_value(values[-1])
+
     if len(values) == 1:
         return _format_pk_value(values[0]), ""
+
+    # Último intento: texto explícito de localización.
+    explicit_values = _explicit_pk_values(
+        " ".join(record.itertext())
+    )
+
+    explicit_values = sorted(
+        set(round(value, 6) for value in explicit_values)
+    )
+
+    if len(explicit_values) >= 2:
+        return (
+            _format_pk_value(explicit_values[0]),
+            _format_pk_value(explicit_values[-1]),
+        )
+
+    if len(explicit_values) == 1:
+        return _format_pk_value(explicit_values[0]), ""
 
     return "", ""
 
@@ -750,17 +726,19 @@ def parse_datex_xml(xml_text, source_url):
                 continue
 
             km = _datex_km(record)
+            direction = _datex_direction(record)
+            location_text = _datex_location_text(record)
+            lat, lon = _datex_coordinates(record)
+            record_id = _datex_record_id(record)
+
             if not km:
                 debug = _location_debug(record)
                 print(
                     "[PK-DIAGNOSTICO] Sin PK | "
                     f"carretera={road} | datex_id={record_id or 'sin-id'} | "
-                    f"situation={situation_id} | {debug or 'sin-campos-de-localizacion-reconocidos'}"
+                    f"situation={situation_id} | "
+                    f"{debug or 'sin-campos-de-localizacion-reconocidos'}"
                 )
-            direction = _datex_direction(record)
-            location_text = _datex_location_text(record)
-            lat, lon = _datex_coordinates(record)
-            record_id = _datex_record_id(record)
 
             key = (
                 record_id
