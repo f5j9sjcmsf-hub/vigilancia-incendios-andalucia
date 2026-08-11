@@ -339,6 +339,45 @@ def _explicit_pk_values(text):
     return values
 
 
+def _location_debug(record):
+    """
+    Devuelve un resumen compacto de los campos de localización del registro
+    DATEX cuando no se ha podido extraer PK. Solo se usa en el log de GitHub;
+    nunca se muestra al usuario en Telegram.
+    """
+    interesting = []
+    wanted = {
+        "frompoint", "topoint", "pointalonglinearelement",
+        "distancealonglinearelement", "distancefromlinearelementreferent",
+        "referentidentifier", "referenttype", "position",
+        "locationreference", "linearlocation", "locationdescription",
+        "supplementarypositionaldescription", "roadsection",
+        "kilometerpoint", "kilometrepoint", "kilometricpoint",
+        "fromkilometerpoint", "tokilometerpoint",
+        "startkilometerpoint", "endkilometerpoint",
+    }
+
+    for element in record.iter():
+        local = element.tag.rsplit("}", 1)[-1].lower()
+        if local not in wanted:
+            continue
+
+        text = normalize(" ".join(element.itertext()))
+        attrs = " ".join(
+            f"{k.rsplit('}', 1)[-1]}={normalize(v)}"
+            for k, v in element.attrib.items()
+            if normalize(v)
+        )
+        value = normalize(" | ".join(v for v in (text, attrs) if v))
+        if value:
+            interesting.append(f"{local}: {value[:220]}")
+
+        if len(interesting) >= 12:
+            break
+
+    return " || ".join(interesting)
+
+
 def _datex_km_range(record):
     """
     Extrae PK de las distintas representaciones de localización que puede
@@ -417,6 +456,19 @@ def _datex_km_range(record):
                 re.IGNORECASE,
             )
         )
+
+        # En algunas publicaciones el tipo de referent aparece como un
+        # elemento hermano de referentIdentifier. Lo comprobamos de forma
+        # explícita para no perder el PK por diferencias de serialización.
+        for child in block.iter():
+            child_local = child.tag.rsplit("}", 1)[-1].lower()
+            if child_local in ("referenttype", "referencetype"):
+                if re.search(
+                    r"referenceMarker|reference marker|kilopost|kilometre[- ]?post|kilometer[- ]?post",
+                    normalize(" ".join(child.itertext())),
+                    re.IGNORECASE,
+                ):
+                    has_reference_marker = True
 
         for child in block.iter():
             child_local = child.tag.rsplit("}", 1)[-1].lower()
@@ -698,6 +750,13 @@ def parse_datex_xml(xml_text, source_url):
                 continue
 
             km = _datex_km(record)
+            if not km:
+                debug = _location_debug(record)
+                print(
+                    "[PK-DIAGNOSTICO] Sin PK | "
+                    f"carretera={road} | datex_id={record_id or 'sin-id'} | "
+                    f"situation={situation_id} | {debug or 'sin-campos-de-localizacion-reconocidos'}"
+                )
             direction = _datex_direction(record)
             location_text = _datex_location_text(record)
             lat, lon = _datex_coordinates(record)
