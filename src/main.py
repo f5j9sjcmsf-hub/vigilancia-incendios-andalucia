@@ -9,24 +9,54 @@ from sources import (
 from logic import (
     process_incidents,
     process_reopenings,
+    initialize_baseline,
 )
 from telegram import send_message
 
 
+def _send_telegram(text, label):
+    """
+    Envía un mensaje a Telegram y deja constancia en los logs.
+    No lee mensajes de usuarios, no usa getUpdates y no crea botones.
+    """
+    try:
+        result = send_message(text)
+
+        if isinstance(result, dict) and result.get("ok") is True:
+            print(f"[TELEGRAM] {label}: enviado correctamente.")
+            return True
+
+        print(
+            f"[TELEGRAM] {label}: respuesta inesperada de la API: "
+            f"{result!r}"
+        )
+        return False
+
+    except Exception as exc:
+        print(
+            f"[TELEGRAM] {label}: ERROR al enviar -> "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return False
+
+
 def main():
     """
-    Ejecuta UNA comprobación completa de vigilancia.
+    VIGILANCIA ANDALUCÍA v19
 
-    Este bot es exclusivamente de salida:
-    - No lee mensajes de Telegram.
-    - No usa getUpdates.
-    - No tiene botones.
-    - No procesa comandos de usuarios.
+    - Solo salida.
+    - NO lee mensajes de Telegram.
+    - NO usa getUpdates.
+    - NO usa botones.
+    - NO procesa comandos.
+    - GitHub Actions ejecuta este archivo cada 30 minutos, 24 horas.
 
-    GitHub Actions ejecuta este archivo cada 30 minutos, las 24 horas.
+    En la primera ejecución de v19 se envía UNA sola prueba automática
+    a TELEGRAM_CHAT_ID para confirmar que Telegram funciona. Después
+    queda registrada en state.json y no vuelve a enviarse.
     """
     print("=" * 60)
-    print("VIGILANCIA ANDALUCÍA v18")
+    print("VIGILANCIA ANDALUCÍA v19")
     print("=" * 60)
 
     state = load_state()
@@ -34,45 +64,77 @@ def main():
     if not isinstance(state, dict):
         state = {}
 
-    # Primera ejecución con estado vacío: tomamos una fotografía inicial.
-    # Los cortes que ya existían no generan un aviso; los cambios posteriores
-    # sí se notifican.
-    state.setdefault("monitoring_initialized", bool(state.get("incidents")))
+    # ------------------------------------------------------------
+    # 0. PRUEBA ÚNICA DE TELEGRAM
+    # ------------------------------------------------------------
+    if not state.get("telegram_test_sent"):
+        print("[TELEGRAM] Ejecutando prueba única de conexión...")
+
+        sent = _send_telegram(
+            (
+                "🤖 <b>🔥IIFF Andalucía</b>\n\n"
+                "Conexión con Telegram confirmada correctamente.\n\n"
+                "La vigilancia está funcionando en modo automático "
+                "y sin botones ni comandos.\n"
+                "Se comprobarán las carreteras cada 30 minutos."
+            ),
+            "Prueba inicial",
+        )
+
+        if sent:
+            state["telegram_test_sent"] = True
+            save_state(state)
+        else:
+            print(
+                "[TELEGRAM] La prueba NO se ha podido enviar. "
+                "Revisar el error anterior."
+            )
+
+    # ------------------------------------------------------------
+    # 1. LÍNEA BASE INICIAL
+    # ------------------------------------------------------------
+    state.setdefault(
+        "monitoring_initialized",
+        bool(state.get("incidents")),
+    )
 
     if not state.get("monitoring_initialized"):
         print("[VIGILANCIA] Primera ejecución: creando línea base.")
 
         detected = fetch_official_incidents()
 
-        # Reutilizamos la función existente de lógica para crear la línea base.
-        from logic import initialize_baseline
+        initialize_baseline(
+            state,
+            detected,
+        )
 
-        initialize_baseline(state, detected)
         state["monitoring_initialized"] = True
         state["last_run"] = datetime.now(TIMEZONE).isoformat()
 
         save_state(state)
 
-        print("[VIGILANCIA] Línea base creada. No se envían avisos en esta ejecución.")
+        print(
+            "[VIGILANCIA] Línea base creada. "
+            "No se envían avisos de cortes existentes."
+        )
         print("=" * 60)
         return
 
     # ------------------------------------------------------------
-    # 1. Fotografía actual
+    # 2. FOTOGRAFÍA ACTUAL
     # ------------------------------------------------------------
     print("[VIGILANCIA] Consultando fuentes oficiales...")
+
     detected = fetch_official_incidents()
 
     print(
-        f"[VIGILANCIA] Incidentes detectados en la fotografía actual: "
+        "[VIGILANCIA] Incidentes detectados en la fotografía actual: "
         f"{len(detected)}"
     )
 
     # ------------------------------------------------------------
-    # 2. Reaperturas
+    # 3. REAPERTURAS
     # ------------------------------------------------------------
-    # Se calculan ANTES de actualizar la fotografía almacenada.
-    # De esta forma podemos comparar el estado anterior con el actual.
     print("[VIGILANCIA] Comprobando posibles reaperturas...")
 
     reopenings = fetch_official_reopenings(
@@ -81,7 +143,7 @@ def main():
     )
 
     print(
-        f"[VIGILANCIA] Posibles reaperturas detectadas: "
+        "[VIGILANCIA] Posibles reaperturas detectadas: "
         f"{len(reopenings)}"
     )
 
@@ -90,10 +152,13 @@ def main():
         reopenings,
     ):
         print("[TELEGRAM] Enviando aviso de reapertura...")
-        send_message(message)
+        _send_telegram(
+            message,
+            "Aviso de reapertura",
+        )
 
     # ------------------------------------------------------------
-    # 3. Nuevos cortes / cambios de estado
+    # 4. NUEVOS CORTES / NUEVOS CIERRES
     # ------------------------------------------------------------
     print("[VIGILANCIA] Comprobando nuevos cortes...")
 
@@ -103,16 +168,19 @@ def main():
     )
 
     print(
-        f"[VIGILANCIA] Avisos de nuevos cortes: "
+        "[VIGILANCIA] Avisos de nuevos cortes: "
         f"{len(incident_messages)}"
     )
 
     for message in incident_messages:
         print("[TELEGRAM] Enviando aviso de corte...")
-        send_message(message)
+        _send_telegram(
+            message,
+            "Aviso de corte",
+        )
 
     # ------------------------------------------------------------
-    # 4. Guardar estado
+    # 5. GUARDAR ESTADO
     # ------------------------------------------------------------
     state["last_run"] = datetime.now(TIMEZONE).isoformat()
     state["monitoring_initialized"] = True
