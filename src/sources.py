@@ -378,139 +378,38 @@ def _location_debug(record):
     return " || ".join(interesting)
 
 
-def _datex_km_values(record):
-    """
-    Extrae TODOS los PK disponibles en el registro DATEX.
-
-    INFOCAR/DGT puede publicar el PK mediante:
-      - kilometerPoint / kilometrePoint / kilometricPoint
-      - pk
-      - from / to
-      - fromKilometerPoint / toKilometerPoint
-      - variantes start/end
-
-    Se buscan estos campos en cualquier nivel del registro para soportar
-    namespaces y las distintas estructuras de publicación DATEX.
-    """
-    values = []
-
-    field_names = (
-        "kilometerPoint",
-        "kilometrePoint",
-        "kilometricPoint",
-        "pk",
-        "fromKilometerPoint",
-        "toKilometerPoint",
-        "fromKilometrePoint",
-        "toKilometrePoint",
-        "fromKilometricPoint",
-        "toKilometricPoint",
-        "startKilometerPoint",
-        "endKilometerPoint",
-        "startKilometrePoint",
-        "endKilometrePoint",
-        "startKilometricPoint",
-        "endKilometricPoint",
-        "startKm",
-        "endKm",
-        "fromPk",
-        "toPk",
-    )
-
-    for name in field_names:
-        for node in record.iter():
-            local = node.tag.rsplit("}", 1)[-1].split(":", 1)[-1].lower()
-            if local != name.lower():
-                continue
-
-            text = normalize(" ".join(node.itertext()))
-            if not text:
-                text = normalize(node.text or "")
-
-            if not text:
-                continue
-
-            for match in re.findall(
-                r"(?<![\d.-])(\d+(?:[.,]\d+)?)(?![\d.-])",
-                text,
-            ):
-                try:
-                    value = float(match.replace(",", "."))
-                except ValueError:
-                    continue
-
-                if 0 <= value <= 1000:
-                    values.append(value)
-
-    # Algunas publicaciones DATEX representan los extremos simplemente
-    # como <from>4.5</from> y <to>31.8</to>. Solo aceptamos estos campos
-    # cuando su contenido es EXCLUSIVAMENTE un PK/número.
-    for name in ("from", "to"):
-        for node in record.iter():
-            local = node.tag.rsplit("}", 1)[-1].split(":", 1)[-1].lower()
-            if local != name:
-                continue
-
-            text = normalize(" ".join(node.itertext()))
-            if not re.fullmatch(
-                r"(?:PK\s*)?\d+(?:[.,]\d+)?",
-                text,
-                re.IGNORECASE,
-            ):
-                continue
-
-            value_text = re.sub(
-                r"^PK\s*",
-                "",
-                text,
-                flags=re.IGNORECASE,
-            )
-
-            try:
-                value = float(value_text.replace(",", "."))
-            except ValueError:
-                continue
-
-            if 0 <= value <= 1000:
-                values.append(value)
-
-    return sorted(set(round(value, 6) for value in values))
-
-
 def _datex_km_range(record):
-    """
-    Devuelve (desde, hasta) a partir de todos los PK publicados por INFOCAR.
+    """Devuelve (desde, hasta) sin usar descripciones de localización como PK."""
+    point = _tag_text(record, (
+        "kilometerPoint", "kilometrePoint", "kilometricPoint", "pk"
+    ))
+    if point:
+        value = _clean_km(point)
+        if value:
+            return value, ""
 
-    Si el registro contiene un único PK, devuelve ese punto.
-    Si contiene dos o más PK, devuelve el mínimo y el máximo.
-    """
-    values = _datex_km_values(record)
+    from_km = _tag_text(record, (
+        "fromKilometerPoint", "fromKilometrePoint", "fromKilometricPoint",
+        "startKilometerPoint", "startKilometrePoint", "startKm", "fromPk",
+    ))
+    to_km = _tag_text(record, (
+        "toKilometerPoint", "toKilometrePoint", "toKilometricPoint",
+        "endKilometerPoint", "endKilometrePoint", "endKm", "toPk",
+    ))
 
-    if len(values) >= 2:
-        return _format_pk_value(values[0]), _format_pk_value(values[-1])
+    # Algunos DATEX usan from/to, pero solo los aceptamos si contienen
+    # explícitamente PK/km o son números puros.
+    if not from_km:
+        raw = _tag_text(record, ("from",))
+        if re.fullmatch(r"\s*(?:PK\s*)?\d+(?:[.,]\d+)?\s*", raw, re.IGNORECASE):
+            from_km = raw
 
-    if len(values) == 1:
-        return _format_pk_value(values[0]), ""
+    if not to_km:
+        raw = _tag_text(record, ("to",))
+        if re.fullmatch(r"\s*(?:PK\s*)?\d+(?:[.,]\d+)?\s*", raw, re.IGNORECASE):
+            to_km = raw
 
-    # Último intento: texto explícito de localización.
-    explicit_values = _explicit_pk_values(
-        " ".join(record.itertext())
-    )
-
-    explicit_values = sorted(
-        set(round(value, 6) for value in explicit_values)
-    )
-
-    if len(explicit_values) >= 2:
-        return (
-            _format_pk_value(explicit_values[0]),
-            _format_pk_value(explicit_values[-1]),
-        )
-
-    if len(explicit_values) == 1:
-        return _format_pk_value(explicit_values[0]), ""
-
-    return "", ""
+    return _clean_km(from_km), _clean_km(to_km)
 
 def _format_km_range(record):
     start_km, end_km = _datex_km_range(record)
@@ -736,8 +635,7 @@ def parse_datex_xml(xml_text, source_url):
                 print(
                     "[PK-DIAGNOSTICO] Sin PK | "
                     f"carretera={road} | datex_id={record_id or 'sin-id'} | "
-                    f"situation={situation_id} | "
-                    f"{debug or 'sin-campos-de-localizacion-reconocidos'}"
+                    f"situation={situation_id} | {debug or 'sin-campos-de-localizacion-reconocidos'}"
                 )
 
             key = (
