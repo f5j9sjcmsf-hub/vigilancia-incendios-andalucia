@@ -672,9 +672,7 @@ def format_snapshot(detected, captured_at=None):
     items = _merge_snapshot_items(detected)
 
     lines = [
-        "<b>📸 ESTADO ACTUAL — INFOCAR + INFOCA</b>",
-        "",
-        f"🕐 Actualización: <b>{_escape(captured)}</b>",
+        f"<b>🕐 ACTUALIZACIÓN: {_escape(captured)}</b>",
         "",
     ]
 
