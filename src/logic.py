@@ -541,7 +541,27 @@ def _merge_snapshot_items(items):
 
         if key not in groups:
             groups[key] = dict(item)
-            groups[key]["road_details"] = []
+
+            # IMPORTANT:
+            # Preserve the road_details already supplied by sources.py.
+            # These details contain the PK extracted from INFOCAR/DGT.
+            groups[key]["road_details"] = [
+                dict(detail)
+                for detail in (item.get("road_details") or [])
+                if isinstance(detail, dict)
+            ]
+
+            # Compatibility fallback for older item structures that only
+            # provided a plain "road" string and a shared "section".
+            if not groups[key]["road_details"]:
+                groups[key]["road_details"] = _road_details(item)
+
+            groups[key]["road"] = ", ".join(
+                detail.get("road", "")
+                for detail in groups[key]["road_details"]
+                if detail.get("road")
+            )
+
             continue
 
         current = groups[key]
@@ -574,16 +594,58 @@ def _merge_snapshot_items(items):
         }
 
         for detail in _road_details(item):
-            key_detail = (
-                _clean(detail.get("road")).lower(),
-                _clean(detail.get("section")).lower(),
-                _clean(detail.get("direction")).lower(),
-            )
+            road_name = _clean(detail.get("road"))
+            section = _clean(detail.get("section"))
+            direction = _clean(detail.get("direction"))
 
-            if not key_detail[0] or key_detail in existing:
+            if not road_name:
                 continue
 
-            current["road_details"].append(detail)
+            key_detail = (
+                road_name.lower(),
+                section.lower(),
+                direction.lower(),
+            )
+
+            # If the current snapshot has the same road without a PK but
+            # the incoming item provides one, replace the incomplete detail.
+            replaced = False
+            for existing_detail in current["road_details"]:
+                if not isinstance(existing_detail, dict):
+                    continue
+
+                if (
+                    _clean(existing_detail.get("road")).lower()
+                    == road_name.lower()
+                ):
+                    existing_section = _clean(
+                        existing_detail.get("section")
+                    )
+
+                    if not existing_section and section:
+                        existing_detail.update(
+                            {
+                                "road": road_name,
+                                "section": section,
+                                "direction": direction,
+                            }
+                        )
+                    replaced = True
+                    break
+
+            if replaced:
+                continue
+
+            if key_detail in existing:
+                continue
+
+            current["road_details"].append(
+                {
+                    "road": road_name,
+                    "section": section,
+                    "direction": direction,
+                }
+            )
             existing.add(key_detail)
 
         current["road"] = ", ".join(
