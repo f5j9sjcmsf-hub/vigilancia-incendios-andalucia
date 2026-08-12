@@ -853,17 +853,19 @@ def parse_datex_xml(xml_text, source_url):
                 continue
 
             km = _datex_km(record)
+            direction = _datex_direction(record)
+            location_text = _datex_location_text(record)
+            lat, lon = _datex_coordinates(record)
+            record_id = _datex_record_id(record)
+
             if not km:
                 debug = _location_debug(record)
                 print(
                     "[PK-DIAGNOSTICO] Sin PK | "
                     f"carretera={road} | datex_id={record_id or 'sin-id'} | "
-                    f"situation={situation_id} | {debug or 'sin-campos-de-localizacion-reconocidos'}"
+                    f"situation={situation_id} | "
+                    f"{debug or 'sin-campos-de-localizacion-reconocidos'}"
                 )
-            direction = _datex_direction(record)
-            location_text = _datex_location_text(record)
-            lat, lon = _datex_coordinates(record)
-            record_id = _datex_record_id(record)
 
             key = (
                 record_id
