@@ -1,6 +1,4 @@
-import html
-import re
-from datetime import datetime
+# VIGILANCIA ANDALUCÍA v35\n# Reaperturas corregidas + sin interacciones Telegram.\n\nimport html\nimport re\nfrom datetime import datetime
 
 
 def _clean(value):
@@ -179,13 +177,6 @@ def format_new_incident(item):
         ]
     )
 
-    lines.extend(
-        [
-            "",
-            "¿Ya lo has atendido?",
-        ]
-    )
-
     return "\n".join(lines)
 
 
@@ -204,36 +195,19 @@ def format_reopening(item):
 
     if road:
         if section:
-            lines.append(
-                f"🚧 <b>{road}</b> — <i>{section}</i>"
-            )
+            lines.append(f"🚧 <b>{road}</b> — <i>{section}</i>")
         else:
-            lines.append(
-                f"🚧 <b>{road}</b>"
-            )
+            lines.append(f"🚧 <b>{road}</b>")
 
-    reopened_at = _format_detected_at(
-        item.get("reopened_at")
-    )
+    reopened_at = _format_detected_at(item.get("reopened_at"))
 
     lines.extend(
         [
             "",
             f"🕐 Reabierta: {_escape(reopened_at)}",
-            "Situación: <b>Reapertura confirmada</b>",
+            "<b>DGT:</b> <i>Confirmado</i>",
         ]
     )
-
-    source = _clean(item.get("source"))
-
-    if source:
-        lines.extend(
-            [
-                "Fuente oficial:",
-                f"• <a href=\"{_escape(source)}\">"
-                f"{_escape(source)}</a>",
-            ]
-        )
 
     return "\n".join(lines)
 
@@ -404,13 +378,13 @@ def process_reopenings(state, reopenings):
         if not road:
             continue
 
-        active_roads = _active_road_names(current)
-
-        # La carretera debe haber desaparecido realmente de la fotografía
-        # almacenada antes de confirmar la reapertura.
-        if road.lower() in active_roads:
-            continue
-
+        # IMPORTANTE v35:
+        # fetch_official_reopenings() ya ha comprobado contra INFOCAR/DGT
+        # que esta carretera ha desaparecido de la fotografía ACTUAL.
+        #
+        # NO debemos volver a comprobarla contra ``current`` aquí, porque
+        # ``current`` es precisamente la fotografía ANTERIOR guardada en
+        # state.json y, por definición, todavía contiene la carretera.
         reopen_key = _reopening_key(item)
         if current.get("last_reopening_key") == reopen_key:
             continue
