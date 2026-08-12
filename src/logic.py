@@ -1,4 +1,4 @@
-# VIGILANCIA ANDALUCÍA v36\n# Reaperturas corregidas + sin interacciones Telegram.\n\nimport html\nimport re\nfrom datetime import datetime
+# VIGILANCIA ANDALUCÍA v37\n# Reaperturas corregidas + sin interacciones Telegram.\n\nimport html\nimport re\nfrom datetime import datetime
 
 
 def _clean(value):
@@ -23,13 +23,13 @@ def _format_detected_at(value):
         return "No disponible"
 
     try:
-        parsed = datetime.strptime(value, "%d/%m/%Y %H:%M")
+        parsed = _datetime.datetime.strptime(value, "%d/%m/%Y %H:%M")
         return parsed.strftime("%d/%m/%Y %H:%M")
     except ValueError:
         pass
 
     try:
-        parsed = datetime.fromisoformat(
+        parsed = _datetime.datetime.fromisoformat(
             value.replace("Z", "+00:00")
         )
         return parsed.strftime("%d/%m/%Y %H:%M")
