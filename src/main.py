@@ -50,7 +50,7 @@ def _send_telegram(text, label):
 
 def main():
     """
-    VIGILANCIA ANDALUCÍA v28
+    VIGILANCIA ANDALUCÍA v30
 
     Flujo de cada ejecución:
 
@@ -69,7 +69,7 @@ def main():
     las 24 horas.
     """
     print("=" * 60)
-    print("VIGILANCIA ANDALUCÍA v28")
+    print("VIGILANCIA ANDALUCÍA v30")
     print("=" * 60)
 
     state = load_state()
@@ -81,6 +81,7 @@ def main():
     # 1. FOTOGRAFÍA ACTUAL
     # ------------------------------------------------------------
     print("[VIGILANCIA] Consultando INFOCAR/DGT + INFOCA...")
+    print("[VIGILANCIA] v30: extracción DATEX de PK + diagnóstico de localización activo.")
 
     detected = fetch_official_incidents()
 
