@@ -2,8 +2,8 @@ name: Vigilancia Andalucía
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/30 * * * *"
+  cron: "11,41 * * * *"
+    timezone: "Europe/Madrid"
 
 permissions:
   contents: write
