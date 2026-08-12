@@ -1,4 +1,4 @@
-# VIGILANCIA ANDALUCÍA v35\n# Reaperturas corregidas + sin interacciones Telegram.\n\nimport html\nimport re\nfrom datetime import datetime
+# VIGILANCIA ANDALUCÍA v36\n# Reaperturas corregidas + sin interacciones Telegram.\n\nimport html\nimport re\nfrom datetime import datetime
 
 
 def _clean(value):
@@ -22,8 +22,11 @@ def _format_detected_at(value):
     if not value:
         return "No disponible"
 
-    if re.fullmatch(r"\d{2}/\d{2}/\d{4} \d{2}:\d{2}", value):
-        return value
+    try:
+        parsed = datetime.strptime(value, "%d/%m/%Y %H:%M")
+        return parsed.strftime("%d/%m/%Y %H:%M")
+    except ValueError:
+        pass
 
     try:
         parsed = datetime.fromisoformat(
@@ -378,7 +381,7 @@ def process_reopenings(state, reopenings):
         if not road:
             continue
 
-        # IMPORTANTE v35:
+        # IMPORTANTE v36:
         # fetch_official_reopenings() ya ha comprobado contra INFOCAR/DGT
         # que esta carretera ha desaparecido de la fotografía ACTUAL.
         #
