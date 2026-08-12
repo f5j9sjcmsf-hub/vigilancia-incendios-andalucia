@@ -29,7 +29,7 @@ DGT_URLS = (
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 "
-        "(compatible; VigilanciaIncendiosAndalucia/3.7)"
+        "(compatible; VigilanciaIncendiosAndalucia/3.8)"
     )
 }
 
