@@ -1,4 +1,6 @@
-# VIGILANCIA ANDALUCÍA v37\n# Reaperturas corregidas + sin interacciones Telegram.\n\nimport html\nimport re\nfrom datetime import datetime
+import html
+import re
+import datetime as _datetime
 
 
 def _clean(value):
@@ -22,11 +24,8 @@ def _format_detected_at(value):
     if not value:
         return "No disponible"
 
-    try:
-        parsed = _datetime.datetime.strptime(value, "%d/%m/%Y %H:%M")
-        return parsed.strftime("%d/%m/%Y %H:%M")
-    except ValueError:
-        pass
+    if re.fullmatch(r"\d{2}/\d{2}/\d{4} \d{2}:\d{2}", value):
+        return value
 
     try:
         parsed = _datetime.datetime.fromisoformat(
@@ -202,12 +201,11 @@ def format_reopening(item):
         else:
             lines.append(f"🚧 <b>{road}</b>")
 
-    reopened_at = _format_detected_at(item.get("reopened_at"))
-
     lines.extend(
         [
             "",
-            f"🕐 Reabierta: {_escape(reopened_at)}",
+            f"🕐 Reabierta: "
+            f"{_escape(_format_detected_at(item.get('reopened_at')))}",
             "<b>DGT:</b> <i>Confirmado</i>",
         ]
     )
@@ -381,13 +379,14 @@ def process_reopenings(state, reopenings):
         if not road:
             continue
 
-        # IMPORTANTE v36:
-        # fetch_official_reopenings() ya ha comprobado contra INFOCAR/DGT
-        # que esta carretera ha desaparecido de la fotografía ACTUAL.
+        # IMPORTANTE v38:
+        # fetch_official_reopenings() ya ha comparado la fotografía anterior
+        # con la fotografía ACTUAL de INFOCAR/DGT y solo devuelve la carretera
+        # cuando ha desaparecido de la fotografía actual.
         #
-        # NO debemos volver a comprobarla contra ``current`` aquí, porque
-        # ``current`` es precisamente la fotografía ANTERIOR guardada en
-        # state.json y, por definición, todavía contiene la carretera.
+        # ``current`` es precisamente la fotografía anterior guardada en
+        # state.json, por lo que la carretera seguirá apareciendo ahí.
+        # No debemos volver a comprobarla contra ``current``.
         reopen_key = _reopening_key(item)
         if current.get("last_reopening_key") == reopen_key:
             continue
@@ -439,7 +438,7 @@ def initialize_baseline(state, detected):
 
     state["incidents"] = incidents
     state["monitoring_initialized"] = True
-    state["baseline_at"] = datetime.now().isoformat()
+    state["baseline_at"] = _datetime.datetime.now().isoformat()
 
 
 def format_status(state):
