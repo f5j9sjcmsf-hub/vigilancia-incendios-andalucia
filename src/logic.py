@@ -738,13 +738,4 @@ def format_snapshot(detected, captured_at=None):
             ]
         )
 
-    lines.extend(
-        [
-            "",
-            "ℹ️ Las carreteras y PK proceden de INFOCAR/DGT.",
-            "INFOCA se utiliza únicamente para identificar el incendio.",
-            "La siguiente ejecución se comparará con esta actualización.",
-        ]
-    )
-
     return "\n".join(lines)
