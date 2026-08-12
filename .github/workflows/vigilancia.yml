@@ -2,8 +2,9 @@ name: Vigilancia Andalucía
 
 on:
   workflow_dispatch:
-  cron: "11,41 * * * *"
-    timezone: "Europe/Madrid"
+  schedule:
+    - cron: "11,41 * * * *"
+      timezone: "Europe/Madrid"
 
 permissions:
   contents: write
@@ -35,7 +36,7 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
-      - name: Ejecutar vigilancia v18
+      - name: Ejecutar vigilancia v38
         working-directory: src
         run: python main.py
 
