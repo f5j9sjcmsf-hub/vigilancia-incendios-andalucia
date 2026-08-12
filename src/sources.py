@@ -29,7 +29,7 @@ DGT_URLS = (
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 "
-        "(compatible; VigilanciaIncendiosAndalucia/3.1)"
+        "(compatible; VigilanciaIncendiosAndalucia/3.0)"
     )
 }
 
@@ -378,38 +378,240 @@ def _location_debug(record):
     return " || ".join(interesting)
 
 
+def _local_name(tag):
+    return tag.rsplit("}", 1)[-1].split(":", 1)[-1].lower()
+
+
 def _datex_km_range(record):
-    """Devuelve (desde, hasta) sin usar descripciones de localización como PK."""
-    point = _tag_text(record, (
-        "kilometerPoint", "kilometrePoint", "kilometricPoint", "pk"
-    ))
-    if point:
-        value = _clean_km(point)
-        if value:
-            return value, ""
+    """
+    Extrae los PK publicados por DATEX/DGT sin utilizar coordenadas ni números
+    arbitrarios.
 
-    from_km = _tag_text(record, (
-        "fromKilometerPoint", "fromKilometrePoint", "fromKilometricPoint",
-        "startKilometerPoint", "startKilometrePoint", "startKm", "fromPk",
-    ))
-    to_km = _tag_text(record, (
-        "toKilometerPoint", "toKilometrePoint", "toKilometricPoint",
-        "endKilometerPoint", "endKilometrePoint", "endKm", "toPk",
-    ))
+    Orden:
+      1) kilometerPoint / kilometrePoint / variantes.
+      2) Estructura TPEG de DGT: extendedTpegNonJunctionPoint/kilometerPoint.
+      3) Referencias lineales explícitamente marcadas como referenceMarker,
+         kilopost, kilometre-post o kilometer-post.
+      4) Texto explícito "PK 4.5", "km 4.5", etc.
+      5) from/to únicamente si contienen un único número (compatibilidad).
 
-    # Algunos DATEX usan from/to, pero solo los aceptamos si contienen
-    # explícitamente PK/km o son números puros.
-    if not from_km:
-        raw = _tag_text(record, ("from",))
-        if re.fullmatch(r"\s*(?:PK\s*)?\d+(?:[.,]\d+)?\s*", raw, re.IGNORECASE):
-            from_km = raw
+    Devuelve (inicio, fin).
+    """
+    values = []
 
-    if not to_km:
-        raw = _tag_text(record, ("to",))
-        if re.fullmatch(r"\s*(?:PK\s*)?\d+(?:[.,]\d+)?\s*", raw, re.IGNORECASE):
-            to_km = raw
+    def local_name(tag):
+        return tag.rsplit("}", 1)[-1].lower()
 
-    return _clean_km(from_km), _clean_km(to_km)
+    def numeric_values(text):
+        text = normalize(text)
+        if not text:
+            return []
+        result = []
+        for match in re.findall(
+            r"(?<![\d.-])(\d+(?:[.,]\d+)?)(?![\d.-])",
+            text,
+        ):
+            try:
+                value = float(match.replace(",", "."))
+            except ValueError:
+                continue
+            if 0 <= value <= 1000:
+                result.append(value)
+        return result
+
+    def explicit_values(text):
+        text = normalize(text)
+        if not text:
+            return []
+        result = []
+        patterns = (
+            r"\b(?:p\.?\s*k\.?|km|kil[oó]metro|kil[oó]metros|pr|p\.?r\.?)"
+            r"\s*[:\-]?\s*(\d+(?:[.,]\d+)?)",
+            r"\b(\d+(?:[.,]\d+)?)\s*(?:km|kil[oó]metro|kil[oó]metros)\b",
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                try:
+                    value = float(match.group(1).replace(",", "."))
+                except ValueError:
+                    continue
+                if 0 <= value <= 1000:
+                    result.append(value)
+        return result
+
+    elements = list(record.iter())
+
+    # 1) Direct PK elements and attributes.
+    pk_names = {
+        "kilometerpoint",
+        "kilometrepoint",
+        "kilometricpoint",
+        "fromkilometerpoint",
+        "tokilometerpoint",
+        "fromkilometrepoint",
+        "tokilometrepoint",
+        "fromkilometricpoint",
+        "tokilometricpoint",
+        "kilometerpointstart",
+        "kilometerpointend",
+        "kilometrepointstart",
+        "kilometrepointend",
+        "startkilometerpoint",
+        "endkilometerpoint",
+        "startkilometrepoint",
+        "endkilometrepoint",
+        "startkilometricpoint",
+        "endkilometricpoint",
+        "startkm",
+        "endkm",
+        "frompk",
+        "topk",
+        "pk",
+    }
+
+    for element in elements:
+        if local_name(element.tag) not in pk_names:
+            continue
+        values.extend(numeric_values(element.text or ""))
+        for attr_value in element.attrib.values():
+            values.extend(numeric_values(attr_value))
+
+    # 2) Explicit TPEG extension used by DGT Spanish profile.
+    for element in elements:
+        if local_name(element.tag) != "extendedtpegnonjunctionpoint":
+            continue
+        for child in element.iter():
+            if local_name(child.tag) == "kilometerpoint":
+                values.extend(numeric_values(child.text or ""))
+                for attr_value in child.attrib.values():
+                    values.extend(numeric_values(attr_value))
+
+    # 3) Linear reference blocks.
+    linear_names = {
+        "pointalonglinearelement",
+        "linearwithinlinearelement",
+        "frompoint",
+        "topoint",
+        "distancealonglinearelement",
+        "distancefromlinearelementreferent",
+        "tpeglinearlocation",
+        "tpegnonjunctionpoint",
+    }
+
+    marker_re = re.compile(
+        r"referenceMarker|reference marker|kilopost|kilometre[- ]?post|"
+        r"kilometer[- ]?post",
+        re.IGNORECASE,
+    )
+
+    for block in elements:
+        if local_name(block.tag) not in linear_names:
+            continue
+
+        block_text = normalize(" ".join(block.itertext()))
+        marker_context = bool(marker_re.search(block_text))
+
+        # Some serializations put referentType outside/inside the same block.
+        for child in block.iter():
+            clocal = local_name(child.tag)
+            if clocal in {"referenttype", "referencetype"}:
+                if marker_re.search(normalize(" ".join(child.itertext()))):
+                    marker_context = True
+
+        if marker_context:
+            for child in block.iter():
+                if local_name(child.tag) == "referentidentifier":
+                    values.extend(numeric_values(child.text or ""))
+
+        # Explicit textual PK in the block is always safe.
+        values.extend(explicit_values(block_text))
+
+    # 4) Explicit PK text in road/location descriptions.
+    explicit_names = {
+        "locationdescription",
+        "supplementarypositionaldescription",
+        "descriptor",
+        "roadsection",
+        "locationtext",
+        "from",
+        "to",
+        "start",
+        "end",
+        "frompoint",
+        "topoint",
+    }
+    for element in elements:
+        if local_name(element.tag) in explicit_names:
+            values.extend(explicit_values(" ".join(element.itertext())))
+
+    # 5) Numeric from/to compatibility only when isolated numeric values.
+    for name in ("from", "to"):
+        for element in elements:
+            if local_name(element.tag) != name:
+                continue
+            raw = normalize(" ".join(element.itertext()))
+            if re.fullmatch(r"(?:PK\s*)?\d+(?:[.,]\d+)?", raw, re.IGNORECASE):
+                values.extend(numeric_values(raw))
+
+    values = sorted(set(round(value, 5) for value in values))
+    if len(values) >= 2:
+        return _format_pk_value(values[0]), _format_pk_value(values[-1])
+    if len(values) == 1:
+        return _format_pk_value(values[0]), ""
+    return "", ""
+
+
+def _pk_debug_xml(record):
+    """
+    Devuelve una instantánea compacta de la parte de localización del XML
+    para diagnosticar registros sin PK. Se imprime solo en GitHub Actions.
+    """
+    interesting = []
+    wanted = {
+        "pointlocation",
+        "tpegpointlocation",
+        "tpeglinearlocation",
+        "tpegnonjunctionpoint",
+        "extendedtpegnonjunctionpoint",
+        "kilometerpoint",
+        "kilometrepoint",
+        "referentidentifier",
+        "referenttype",
+        "frompoint",
+        "topoint",
+        "pointalonglinearelement",
+        "distancealonglinearelement",
+        "distancefromlinearelementreferent",
+        "locationreference",
+    }
+    for element in record.iter():
+        local = local_name(element.tag) if "local_name" in locals() else element.tag.rsplit("}",1)[-1].lower()
+        if local not in wanted:
+            continue
+        text = normalize(" ".join(element.itertext()))
+        attrs = " ".join(
+            f"{k.rsplit('}',1)[-1]}={normalize(v)}"
+            for k,v in element.attrib.items()
+            if normalize(v)
+        )
+        payload = normalize(" | ".join(v for v in (text, attrs) if v))
+        if payload:
+            interesting.append(f"{local}: {payload[:260]}")
+        if len(interesting) >= 20:
+            break
+
+    # If the whitelist finds nothing, include a bounded XML snippet containing
+    # the word "location", "tpeg", "kilometer", or "referent".
+    if not interesting:
+        xml = ET.tostring(record, encoding="unicode")
+        matches = re.findall(
+            r"<[^>]*(?:location|tpeg|kilometer|kilometre|referent)[^>]*>.*?</[^>]+>",
+            xml,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        interesting.extend(normalize(x)[:320] for x in matches[:8])
+
+    return " || ".join(interesting) or "SIN CAMPOS DE LOCALIZACIÓN RECONOCIBLES"
 
 def _format_km_range(record):
     start_km, end_km = _datex_km_range(record)
@@ -544,6 +746,32 @@ def _datex_detected_at(record):
     return display_datetime()
 
 
+def _datex_detected_at(record):
+    """
+    Intenta conservar la fecha/hora publicada por DATEX.
+    Si no existe, usa la hora local de la consulta.
+    """
+    names = (
+        "situationRecordCreationTime",
+        "overallStartTime",
+        "situationRecordVersionTime",
+        "startTime",
+    )
+    for name in names:
+        for node in record.iter():
+            if _local_name(node.tag) != name.lower():
+                continue
+            value = normalize(" ".join(node.itertext()))
+            if not value:
+                continue
+            try:
+                dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                return dt.astimezone().strftime("%d/%m/%Y %H:%M")
+            except ValueError:
+                continue
+    return display_datetime()
+
+
 def parse_datex_xml(xml_text, source_url):
     """
     Extrae los cortes INFOCAR/DGT y conserva el identificador de la
@@ -625,11 +853,6 @@ def parse_datex_xml(xml_text, source_url):
                 continue
 
             km = _datex_km(record)
-            direction = _datex_direction(record)
-            location_text = _datex_location_text(record)
-            lat, lon = _datex_coordinates(record)
-            record_id = _datex_record_id(record)
-
             if not km:
                 debug = _location_debug(record)
                 print(
@@ -637,6 +860,10 @@ def parse_datex_xml(xml_text, source_url):
                     f"carretera={road} | datex_id={record_id or 'sin-id'} | "
                     f"situation={situation_id} | {debug or 'sin-campos-de-localizacion-reconocidos'}"
                 )
+            direction = _datex_direction(record)
+            location_text = _datex_location_text(record)
+            lat, lon = _datex_coordinates(record)
+            record_id = _datex_record_id(record)
 
             key = (
                 record_id
