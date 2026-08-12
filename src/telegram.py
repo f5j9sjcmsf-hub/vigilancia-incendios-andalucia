@@ -40,7 +40,7 @@ def send_message(text):
     """
     Envía únicamente mensajes de salida.
 
-    v35:
+    v36:
     - No usa botones inline.
     - No usa ReplyKeyboardMarkup.
     - No procesa comandos.
