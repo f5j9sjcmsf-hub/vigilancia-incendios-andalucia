@@ -1,20 +1,41 @@
-# Vigilancia de cortes de carretera por incendios forestales en Andalucía
+# Vigilancia de cortes por incendios en Andalucía
 
-Bot de Telegram para detectar nuevos cortes y reaperturas de carreteras causados por incendios forestales en Andalucía.
+Bot de Telegram que vigila los cortes y reaperturas de carreteras causados
+por incendios forestales en las ocho provincias andaluzas.
 
-Arquitectura inicial:
-- Python 3.12
-- GitHub Actions
-- Telegram Bot API
-- zona horaria `Europe/Madrid`
-- ejecución horaria a los 07 minutos, de 09:07 a 22:07
+## Funcionamiento
 
-La integración de fuentes oficiales se mantiene separada para poder verificar y adaptar los endpoints oficiales antes de activar alertas de producción.
+- INFOCAR/DGT DATEX II es la fuente de verdad de los cortes y reaperturas.
+- El filtro regional usa los campos oficiales de comunidad, provincia y
+  municipio del propio feed; no depende de un incendio concreto.
+- INFOCA se usa únicamente para enriquecer internamente la identificación
+  cuando existe una coincidencia clara.
+- Los mensajes de Telegram no muestran noticias, titulares ni enlaces.
+- Los cortes DGT sin coincidencia INFOCA también se notifican.
+- Una carretera añadida a un incendio existente genera un nuevo aviso.
+- Las reaperturas se deduplican y un cierre posterior vuelve a notificarse.
+
+La vigilancia se programa a los minutos `07`, `22`, `37` y `52` de cada hora,
+las 24 horas, en la zona `Europe/Madrid`. Cada ejecución activa un vigilante
+que comprueba las fuentes cada 15 minutos durante unas 5 horas y media. Los
+disparos nuevos quedan como relevo, lo que evita depender de que GitHub cumpla
+puntualmente cada cron. El resumen periódico de Telegram se limita a uno por
+hora; los cambios se avisan en la primera comprobación que los detecta.
+
+## Fiabilidad
+
+- Si INFOCAR/DGT no responde, la ejecución falla y no interpreta el error
+  como ausencia de cortes.
+- Si Telegram no confirma un envío, el estado no avanza y el aviso se
+  reintenta en la ejecución siguiente.
+- El estado se escribe de forma atómica en `data/state.json`.
+- El workflow ejecuta las pruebas antes de consultar las fuentes reales.
 
 ## Secretos de GitHub
 
-En `Settings -> Secrets and variables -> Actions` crear:
+En `Settings → Secrets and variables → Actions` deben existir:
+
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 
-Nunca publiques el token en el repositorio.
+El token nunca debe publicarse en el repositorio.
