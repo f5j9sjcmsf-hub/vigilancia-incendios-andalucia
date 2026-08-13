@@ -1027,7 +1027,7 @@ def extract_roads(text):
         r"\b("
         r"A|AP|N|AL|CA|CO|GR|H|HU|J|JA|MA|SE|"
         r"EX|CM|CR|TO"
-        r")-?\s*(\d{1,5})\b",
+        r")\s*[-‐‑‒–—]\s*(\d{1,5})\b",
         re.IGNORECASE,
     )
 
@@ -1108,7 +1108,7 @@ def extract_municipality(title, text):
 
 def extract_fire_name(title, municipality):
     if municipality != "No disponible":
-        return f"Incendio de {municipality}"
+        return f"IFF {municipality}"
 
     title = normalize(title)
 
@@ -1131,7 +1131,7 @@ def extract_fire_name(title, municipality):
         if match:
             value = normalize(match.group(1))
             if value:
-                return f"Incendio de {value}"
+                return f"IFF {value}"
 
     return "Incendio forestal"
 
@@ -1227,25 +1227,37 @@ def parse_infoca_article(article):
         return None
 
     soup = BeautifulSoup(
-        response.text,
+        getattr(response, "content", None) or response.text,
         "lxml",
     )
 
-    title = normalize(
-        soup.title.get_text()
+    page_title = normalize(
+        soup.title.get_text(" ", strip=True)
         if soup.title
-        else article["title"]
+        else ""
     )
+    candidate_title = normalize(article.get("title", ""))
+    title = normalize(f"{candidate_title} {page_title}")
 
-    body_nodes = soup.select("div.field--name-body")
-    if body_nodes:
-        # La página incluye navegación y contenidos relacionados. Usar el
-        # bloque editorial más extenso evita atribuir carreteras de otras
-        # publicaciones al incendio actual.
-        body_node = max(
-            body_nodes,
-            key=lambda node: len(node.get_text(" ", strip=True)),
-        )
+    # En las fichas actuales de la Junta, ``field--name-body`` pertenece a
+    # la navegación. El comunicado real está en ``zonaAmpliarTexto1``. Se
+    # mantienen selectores alternativos para las plantillas históricas.
+    body_node = None
+    for selector in (
+        "#zonaAmpliarTexto1",
+        ".cuerpo_noticia",
+        ".contenedor_noticia_detalle",
+        "div.field--name-body",
+    ):
+        body_nodes = soup.select(selector)
+        if body_nodes:
+            body_node = max(
+                body_nodes,
+                key=lambda node: len(node.get_text(" ", strip=True)),
+            )
+            break
+
+    if body_node is not None:
         body = normalize(body_node.get_text(" ", strip=True))
     else:
         body = normalize(soup.get_text(" ", strip=True))
