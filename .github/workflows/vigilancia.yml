@@ -3,7 +3,8 @@ name: Vigilancia Andalucía
 on:
   workflow_dispatch:
   schedule:
-    - cron: "11,41 * * * *"
+    # Cuatro oportunidades por hora, fuera del minuto 0 (más congestionado).
+    - cron: "7,22,37,52 * * * *"
       timezone: "Europe/Madrid"
 
 permissions:
@@ -15,6 +16,8 @@ env:
   TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
 concurrency:
+  # Solo hay un vigilante activo. Los disparos nuevos quedan como relevo
+  # para cuando finalice la ventana actual.
   group: vigilancia-andalucia
   cancel-in-progress: false
 
@@ -24,32 +27,49 @@ jobs:
 
     steps:
       - name: Descargar repositorio
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Configurar Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
-      - name: Ejecutar vigilancia v38
-        working-directory: src
-        run: python main.py
+      - name: Ejecutar pruebas
+        run: python -m unittest discover -s tests -v
 
-      - name: Guardar estado
+      - name: Vigilar y guardar estado cada 15 minutos
+        timeout-minutes: 350
         run: |
+          set -euo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add data/state.json
+          # Un run programado de GitHub puede retrasarse o descartarse. Cada
+          # run que sí comienza mantiene la vigilancia durante 5 h 30 min;
+          # los cuatro cron por hora aportan los relevos de reserva.
+          for iteration in $(seq 1 23); do
+            echo "Comprobación $iteration/23"
+            python src/main.py
 
-          if git diff --cached --quiet; then
-            echo "No hay cambios en el estado que guardar."
-          else
-            git commit -m "Actualizar estado de vigilancia"
-            git push
-          fi
+            if git diff --quiet -- data/state.json; then
+              echo "No hay cambios en el estado que guardar."
+            else
+              cp data/state.json "$RUNNER_TEMP/state.json"
+              git checkout -- data/state.json
+              git pull --rebase origin main
+              cp "$RUNNER_TEMP/state.json" data/state.json
+              git add data/state.json
+              git commit -m "Actualizar estado de vigilancia"
+              git push
+            fi
+
+            if [ "$iteration" -lt 23 ]; then
+              sleep 900
+            fi
+          done
