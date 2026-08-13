@@ -3,7 +3,9 @@ import requests
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 
+MAX_MESSAGE_LENGTH = 4000
 API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+_commands_checked = False
 
 
 def _call(method, payload=None):
@@ -13,72 +15,81 @@ def _call(method, payload=None):
         timeout=30,
     )
     response.raise_for_status()
-    return response.json()
+    result = response.json()
+    if result.get("ok") is not True:
+        raise RuntimeError(f"Telegram rechazó {method}: {result!r}")
+    return result
 
 
-def _remove_old_keyboard():
-    """
-    Telegram puede conservar el teclado persistente creado por versiones
-    antiguas del bot. Esta llamada lo elimina definitivamente.
-    """
-    try:
-        _call(
-            "sendMessage",
-            {
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": "\u200b",
-                "reply_markup": {"remove_keyboard": True},
-            },
-        )
-    except Exception as exc:
-        print(
-            f"[TELEGRAM] No se pudo retirar el teclado antiguo: "
-            f"{type(exc).__name__}: {exc}"
-        )
+def _delete_commands_once():
+    global _commands_checked
 
+    if _commands_checked:
+        return
 
-def _delete_commands():
-    """
-    Borra los comandos registrados del bot para que no quede un menú de
-    comandos de versiones anteriores.
-    """
+    _commands_checked = True
     try:
         _call("deleteMyCommands", {})
     except Exception as exc:
         print(
-            f"[TELEGRAM] No se pudieron borrar los comandos: "
+            "[TELEGRAM] No se pudieron borrar los comandos antiguos: "
             f"{type(exc).__name__}: {exc}"
         )
 
 
+def _split_message(text):
+    text = str(text)
+    if len(text) <= MAX_MESSAGE_LENGTH:
+        return [text]
+
+    chunks = []
+    current = []
+    current_length = 0
+
+    for line in text.splitlines(keepends=True):
+        if len(line) > MAX_MESSAGE_LENGTH:
+            raise ValueError(
+                "Una línea del mensaje supera el límite de Telegram."
+            )
+
+        if current and current_length + len(line) > MAX_MESSAGE_LENGTH:
+            chunks.append("".join(current))
+            current = []
+            current_length = 0
+
+        current.append(line)
+        current_length += len(line)
+
+    if current:
+        chunks.append("".join(current))
+
+    return chunks
+
+
 def send_message(text):
-    """
-    Bot exclusivamente de salida:
-      - sin botones;
-      - sin teclado persistente;
-      - sin comandos;
-      - sin lectura de mensajes de usuarios.
-    """
+    """Envía mensajes sin botones, noticias, enlaces ni teclados."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         raise RuntimeError(
             "Faltan TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID."
         )
 
-    # Retiramos cualquier teclado/comandos que una versión anterior dejara
-    # persistidos. Se hace antes del mensaje real.
-    _delete_commands()
-    _remove_old_keyboard()
+    _delete_commands_once()
 
-    response = requests.post(
-        f"{API}/sendMessage",
-        json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=30,
-    )
+    results = []
+    for chunk in _split_message(text):
+        results.append(
+            _call(
+                "sendMessage",
+                {
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "text": chunk,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+            )
+        )
 
-    response.raise_for_status()
-    return response.json()
+    return {
+        "ok": all(result.get("ok") is True for result in results),
+        "result": results,
+    }

@@ -1,213 +1,108 @@
+from copy import deepcopy
 from datetime import datetime
 
 from config import TIMEZONE
-from storage import load_state, save_state
-from sources import (
-    fetch_official_incidents,
-    fetch_official_reopenings,
-)
 from logic import (
+    format_snapshot,
+    initialize_baseline,
     process_incidents,
     process_reopenings,
-    initialize_baseline,
-    format_snapshot,
 )
+from sources import fetch_official_incidents, fetch_official_reopenings
+from storage import load_state, save_state
 from telegram import send_message
 
 
 def _send_telegram(text, label):
-    """
-    Envía un mensaje de salida a Telegram.
+    """Envía un aviso y falla la ejecución si Telegram no lo confirma."""
+    result = send_message(text)
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise RuntimeError(
+            f"Telegram no confirmó el envío de {label}: {result!r}"
+        )
+    print(f"[TELEGRAM] {label}: enviado correctamente.")
 
-    Este bot NO lee mensajes de usuarios:
-    - no usa getUpdates;
-    - no usa webhooks;
-    - no tiene botones;
-    - no procesa comandos.
 
-    Solo utiliza Telegram para enviar los avisos al chat configurado.
-    """
+def _snapshot_due(state, now, minimum_minutes=55):
+    """Limita el resumen periódico aunque la vigilancia sea más frecuente."""
+    previous = state.get("last_snapshot_at")
+    if not previous:
+        return True
     try:
-        result = send_message(text)
-
-        if isinstance(result, dict) and result.get("ok") is True:
-            print(f"[TELEGRAM] {label}: enviado correctamente.")
-            return True
-
-        print(
-            f"[TELEGRAM] {label}: respuesta inesperada de Telegram: "
-            f"{result!r}"
-        )
-        return False
-
-    except Exception as exc:
-        print(
-            f"[TELEGRAM] {label}: ERROR -> "
-            f"{type(exc).__name__}: {exc}"
-        )
-        return False
+        previous_at = datetime.fromisoformat(str(previous).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if previous_at.tzinfo is None:
+        previous_at = previous_at.replace(tzinfo=TIMEZONE)
+    return (now - previous_at).total_seconds() >= minimum_minutes * 60
 
 
 def main():
     """
-    VIGILANCIA ANDALUCÍA v38
+    Vigilancia de todos los cortes por incendio publicados por INFOCAR/DGT
+    en Andalucía. INFOCA solo enriquece internamente la identificación del
+    incendio; los mensajes no muestran noticias, titulares ni enlaces.
 
-    Flujo de cada ejecución:
-
-    1. Consulta INFOCAR/DGT + INFOCA.
-    2. Construye la fotografía actual.
-    3. ENVÍA SIEMPRE esa fotografía a Telegram.
-    4. Si es la primera ejecución, guarda la fotografía como línea base
-       y NO genera avisos de cambios.
-    5. Si ya existe una línea base:
-       - detecta reaperturas por desaparición de una carretera;
-       - detecta nuevos cortes;
-       - actualiza la línea base con la fotografía actual.
-    6. Guarda el estado.
-
-    GitHub Actions se encarga de ejecutar este archivo cada 30 minutos,
-    las 24 horas.
+    El estado se guarda de forma transaccional: si cualquier mensaje falla,
+    GitHub Actions termina con error y la siguiente ejecución lo reintentará.
     """
     print("=" * 60)
-    print("VIGILANCIA ANDALUCÍA v33")
+    print("VIGILANCIA DE INCENDIOS EN ANDALUCÍA v40")
     print("=" * 60)
 
     state = load_state()
-
     if not isinstance(state, dict):
         state = {}
+    working_state = deepcopy(state)
 
-    # ------------------------------------------------------------
-    # 1. FOTOGRAFÍA ACTUAL
-    # ------------------------------------------------------------
-    print("[VIGILANCIA] Consultando INFOCAR/DGT + INFOCA...")
-    print("[VIGILANCIA] v38: sin botones/comandos y con reaperturas activas.")
-
+    print("[VIGILANCIA] Consultando INFOCAR/DGT para toda Andalucía...")
     detected = fetch_official_incidents()
+    captured = datetime.now(TIMEZONE)
+    captured_at = captured.isoformat()
+    print(f"[VIGILANCIA] Incidentes activos detectados: {len(detected)}")
 
-    captured_at = datetime.now(TIMEZONE).isoformat()
-
-    print(
-        "[VIGILANCIA] Incidentes en la fotografía actual: "
-        f"{len(detected)}"
-    )
-
-    # ------------------------------------------------------------
-    # 2. ENVIAR SIEMPRE LA FOTOGRAFÍA
-    # ------------------------------------------------------------
-    snapshot = format_snapshot(
-        detected,
-        captured_at,
-    )
-
-    print("[TELEGRAM] Enviando actualización de estado...")
-    _send_telegram(
-        snapshot,
-        "Actualización de estado",
-    )
-
-    # ------------------------------------------------------------
-    # 3. PRIMERA EJECUCIÓN -> CREAR LÍNEA BASE
-    # ------------------------------------------------------------
-    state.setdefault(
+    working_state.setdefault(
         "monitoring_initialized",
-        bool(state.get("incidents")),
+        bool(working_state.get("incidents")),
     )
 
-    if not state.get("monitoring_initialized"):
-        print(
-            "[VIGILANCIA] Primera ejecución: "
-            "creando línea base."
+    if not working_state.get("monitoring_initialized"):
+        _send_telegram(
+            format_snapshot(detected, captured_at),
+            "actualización de estado",
         )
-
-        initialize_baseline(
-            state,
-            detected,
-        )
-
-        state["monitoring_initialized"] = True
-        state["baseline_at"] = captured_at
-        state["last_run"] = captured_at
-        state["last_snapshot_at"] = captured_at
-
-        save_state(state)
-
-        print(
-            "[VIGILANCIA] Línea base creada. "
-            "No se generan avisos de cambios en esta ejecución."
-        )
+        initialize_baseline(working_state, detected)
+        working_state["baseline_at"] = captured_at
+        working_state["last_run"] = captured_at
+        working_state["last_snapshot_at"] = captured_at
+        save_state(working_state)
+        print("[VIGILANCIA] Línea base creada sin avisos retrospectivos.")
         print("=" * 60)
         return
 
-    # ------------------------------------------------------------
-    # 4. REAPERTURAS
-    # ------------------------------------------------------------
-    # Se comprueban antes de process_incidents(), porque aquí todavía
-    # tenemos disponible la fotografía anterior en state.
-    print(
-        "[VIGILANCIA] Comparando con la fotografía anterior "
-        "para detectar reaperturas..."
-    )
+    reopenings = fetch_official_reopenings(working_state, detected)
+    reopening_messages = process_reopenings(working_state, reopenings)
+    print(f"[VIGILANCIA] Reaperturas nuevas: {len(reopening_messages)}")
+    for message in reopening_messages:
+        _send_telegram(message, "aviso de reapertura")
 
-    reopenings = fetch_official_reopenings(
-        state,
-        detected,
-    )
-
-    print(
-        "[VIGILANCIA] Reaperturas detectadas: "
-        f"{len(reopenings)}"
-    )
-
-    for message in process_reopenings(
-        state,
-        reopenings,
-    ):
-        print("[TELEGRAM] Enviando aviso de reapertura...")
-        _send_telegram(
-            message,
-            "Aviso de reapertura",
-        )
-
-    # ------------------------------------------------------------
-    # 5. NUEVOS CORTES / RECIERRES
-    # ------------------------------------------------------------
-    print(
-        "[VIGILANCIA] Comparando con la fotografía anterior "
-        "para detectar nuevos cortes..."
-    )
-
-    incident_messages = process_incidents(
-        state,
-        detected,
-    )
-
-    print(
-        "[VIGILANCIA] Nuevos avisos de corte: "
-        f"{len(incident_messages)}"
-    )
-
+    incident_messages = process_incidents(working_state, detected)
+    print(f"[VIGILANCIA] Cortes nuevos o ampliados: {len(incident_messages)}")
     for message in incident_messages:
-        print("[TELEGRAM] Enviando aviso de corte...")
+        _send_telegram(message, "aviso de corte")
+
+    if _snapshot_due(state, captured):
         _send_telegram(
-            message,
-            "Aviso de corte",
+            format_snapshot(detected, captured_at),
+            "actualización de estado",
         )
+        working_state["last_snapshot_at"] = captured_at
 
-    # ------------------------------------------------------------
-    # 6. GUARDAR LA NUEVA FOTOGRAFÍA COMO REFERENCIA
-    # ------------------------------------------------------------
-    state["monitoring_initialized"] = True
-    state["last_run"] = captured_at
-    state["last_snapshot_at"] = captured_at
+    working_state["monitoring_initialized"] = True
+    working_state["last_run"] = captured_at
+    save_state(working_state)
 
-    save_state(state)
-
-    print(
-        "[VIGILANCIA] Fotografía actual guardada como "
-        "referencia para la siguiente ejecución."
-    )
-    print("[VIGILANCIA] Comprobación finalizada.")
+    print("[VIGILANCIA] Estado guardado correctamente.")
     print("=" * 60)
 
 

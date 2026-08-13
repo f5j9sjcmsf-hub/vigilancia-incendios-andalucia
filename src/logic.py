@@ -1,6 +1,6 @@
+import datetime as _datetime
 import html
 import re
-import datetime as _datetime
 
 
 def _clean(value):
@@ -14,12 +14,6 @@ def _escape(value):
 
 
 def _format_detected_at(value):
-    """
-    Acepta:
-      - 09/08/2026 12:21
-      - ISO 8601
-    y devuelve siempre DD/MM/YYYY HH:MM.
-    """
     value = _clean(value)
     if not value:
         return "No disponible"
@@ -28,133 +22,112 @@ def _format_detected_at(value):
         return value
 
     try:
-        parsed = _datetime.datetime.fromisoformat(
-            value.replace("Z", "+00:00")
-        )
+        parsed = _datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
         return parsed.strftime("%d/%m/%Y %H:%M")
     except ValueError:
         return value[:16]
 
 
 def _road_details(item):
-    """
-    Devuelve una lista de:
-      {"road": "...", "section": "...", "direction": "..."}
-    Compatible también con items antiguos que solo tengan 'road'.
-    """
     details = item.get("road_details")
+    result = []
+    seen = set()
 
     if isinstance(details, list):
-        result = []
-        seen = set()
-
         for detail in details:
             if not isinstance(detail, dict):
                 continue
-
             road = _clean(detail.get("road"))
             section = _clean(detail.get("section"))
             direction = _clean(detail.get("direction"))
-
-            if not road:
-                continue
-
             key = (road.lower(), section.lower(), direction.lower())
-            if key in seen:
+            if not road or key in seen:
                 continue
-
             seen.add(key)
             result.append(
                 {
                     "road": road,
                     "section": section,
                     "direction": direction,
+                    "datex_ids": list(detail.get("datex_ids", [])),
+                    "situation_ids": list(detail.get("situation_ids", [])),
                 }
             )
 
-        if result:
-            return result
-
-    # Compatibilidad con la estructura anterior.
-    roads = [
-        _clean(value)
-        for value in _clean(item.get("road")).split(",")
-        if _clean(value)
-    ]
+    if result:
+        return result
 
     section = _clean(item.get("section"))
-
+    direction = _clean(item.get("direction"))
     return [
-        {
-            "road": road,
-            "section": section,
-            "direction": _clean(item.get("direction")),
-        }
-        for road in roads
+        {"road": road, "section": section, "direction": direction}
+        for road in (_clean(value) for value in _clean(item.get("road")).split(","))
+        if road
     ]
+
+
+def _road_names(item):
+    return {
+        _clean(detail.get("road")).lower()
+        for detail in _road_details(item)
+        if _clean(detail.get("road"))
+    }
+
+
+def _situation_ids(item):
+    values = item.get("situation_ids", [])
+    if not isinstance(values, (list, tuple, set)):
+        values = [values]
+    return {_clean(value) for value in values if _clean(value)}
+
+
+def incident_key(item):
+    identity = _clean(item.get("incident_id"))
+    if identity:
+        return identity.lower()
+
+    situations = sorted(_situation_ids(item))
+    if situations:
+        return "dgt:" + "|".join(situations).lower()
+
+    return "legacy:" + "|".join(
+        [
+            _clean(item.get("fire")).lower(),
+            _clean(item.get("province")).lower(),
+            _clean(item.get("municipality")).lower(),
+        ]
+    )
+
+
+def _format_location(item):
+    municipality = _clean(item.get("municipality")) or "No disponible"
+    province = _clean(item.get("province")) or "No disponible"
+    return f"📍 {_escape(municipality)} ({_escape(province)})"
 
 
 def _format_road_line(detail):
     road = _escape(detail.get("road"))
     section = _escape(detail.get("section"))
-
     if not road:
         return ""
-
     if section:
         return f"• <b>{road}</b> — <i>{section}</i>"
-
     return f"• <b>{road}</b>"
 
 
-def _official_sources(item):
-    raw = item.get("other_sources")
-
-    if isinstance(raw, (list, tuple, set)):
-        values = raw
-    else:
-        values = re.split(r"\s*\|\s*", _clean(raw))
-
-    sources = []
-    seen = set()
-
-    for value in values:
-        value = _clean(value)
-        if not value:
-            continue
-
-        if value in seen:
-            continue
-
-        seen.add(value)
-        sources.append(value)
-
-    return sources
-
-
-def incident_key(item):
-    """
-    Un único aviso por incendio.
-
-    No utiliza la lista de carreteras: si el mismo incendio incorpora
-    nuevas carreteras en una ejecución posterior, no genera otro aviso.
-    """
-    return "|".join(
-        [
-            _clean(item.get("fire")).strip().lower(),
-            _clean(item.get("province")).strip().lower(),
-            _clean(item.get("municipality")).strip().lower(),
-        ]
-    )
+def _confirmation_lines(item):
+    lines = ["<b>INFOCAR/DGT:</b> <i>Confirmado</i>"]
+    if item.get("infoca_matched"):
+        lines.append("<b>INFOCA:</b> <i>Incendio identificado</i>")
+    return lines
 
 
 def format_new_incident(item):
     lines = [
         "<b>🔥 CORTE DE CARRETERA POR INCENDIO</b>",
         "",
-        f"<i>{_escape(item.get('fire', 'Incendio forestal'))}</i>",
-        f"📍 {_escape(item.get('municipality', 'No disponible'))}"
-        f" ({_escape(item.get('province', 'No disponible'))})",
+        f"<i>{_escape(item.get('fire') or 'Incendio forestal')}</i>",
+        _format_location(item),
         "",
         "<b>🚧 CARRETERAS AFECTADAS</b>",
     ]
@@ -164,210 +137,196 @@ def format_new_incident(item):
         if line:
             lines.append(line)
 
-    if len(lines) == 6:
-        # No debería ocurrir en una incidencia válida, pero evita dejar
-        # un encabezado vacío si los datos llegan incompletos.
-        lines.pop()
-
     lines.extend(
         [
             "",
-            f"🕐 Detectado: "
-            f"{_escape(_format_detected_at(item.get('detected_at')))}",
-            "<b>DGT:</b> <i>Confirmado</i>",
-            "<b>INFOCA:</b> <i>Confirmado</i>",
+            f"🕐 Detectado: {_escape(_format_detected_at(item.get('detected_at')))}",
+            *_confirmation_lines(item),
         ]
     )
-
     return "\n".join(lines)
 
 
 def format_reopening(item):
-    lines = [
-        "<b>🔓 CARRETERA REABIERTA</b>",
-        "",
-        f"<i>{_escape(item.get('fire', 'Incendio forestal'))}</i>",
-        f"📍 {_escape(item.get('municipality', 'No disponible'))}"
-        f" ({_escape(item.get('province', 'No disponible'))})",
-        "",
-    ]
-
     road = _escape(item.get("road"))
     section = _escape(item.get("section"))
+    road_line = f"🚧 <b>{road}</b>"
+    if section:
+        road_line += f" — <i>{section}</i>"
 
-    if road:
-        if section:
-            lines.append(f"🚧 <b>{road}</b> — <i>{section}</i>")
-        else:
-            lines.append(f"🚧 <b>{road}</b>")
-
-    lines.extend(
+    return "\n".join(
         [
+            "<b>🔓 CARRETERA REABIERTA</b>",
             "",
-            f"🕐 Reabierta: "
-            f"{_escape(_format_detected_at(item.get('reopened_at')))}",
-            "<b>DGT:</b> <i>Confirmado</i>",
+            f"<i>{_escape(item.get('fire') or 'Incendio forestal')}</i>",
+            _format_location(item),
+            "",
+            road_line,
+            "",
+            f"🕐 Reabierta: {_escape(_format_detected_at(item.get('reopened_at')))}",
+            "<b>INFOCAR/DGT:</b> <i>Confirmado</i>",
         ]
     )
 
-    return "\n".join(lines)
+
+def _matching_incident_keys(incidents, item):
+    target = incident_key(item)
+    matches = []
+    if target in incidents:
+        matches.append(target)
+
+    situations = _situation_ids(item)
+    if situations:
+        for key, current in incidents.items():
+            if key not in matches and situations.intersection(_situation_ids(current)):
+                matches.append(key)
+
+    # Compatibilidad con estados anteriores a la identidad DATEX estable.
+    if not matches:
+        legacy = "|".join(
+            [
+                _clean(item.get("fire")).lower(),
+                _clean(item.get("province")).lower(),
+                _clean(item.get("municipality")).lower(),
+            ]
+        )
+        for key, current in incidents.items():
+            current_legacy = "|".join(
+                [
+                    _clean(current.get("fire")).lower(),
+                    _clean(current.get("province")).lower(),
+                    _clean(current.get("municipality")).lower(),
+                ]
+            )
+            if legacy == current_legacy:
+                matches.append(key)
+                break
+
+    return matches
 
 
-def _road_details_without(details, road):
-    """Elimina una carretera concreta de una lista de detalles."""
+def _detail_for_road(item, road):
     target = _clean(road).lower()
-    result = []
-
-    for detail in details or []:
-        if not isinstance(detail, dict):
-            continue
-
-        if _clean(detail.get("road")).lower() == target:
-            continue
-
-        result.append(detail)
-
-    return result
-
-
-def _active_road_names(item):
-    return {
-        _clean(detail.get("road")).lower()
-        for detail in _road_details(item)
-        if _clean(detail.get("road"))
-    }
-
-
-def _find_detail(item, road):
-    target = _clean(road).lower()
-
     for detail in _road_details(item):
         if _clean(detail.get("road")).lower() == target:
             return detail
-
-    return {
-        "road": road,
-        "section": "",
-        "direction": "",
-    }
+    return {"road": road, "section": "", "direction": ""}
 
 
 def process_incidents(state, detected):
     alerts = []
     incidents = state.setdefault("incidents", {})
 
-    for item in detected:
-        key = incident_key(item)
-        current_roads = _active_road_names(item)
+    for item in detected or []:
+        target_key = incident_key(item)
+        matches = _matching_incident_keys(incidents, item)
+        current_roads = _road_names(item)
 
-        if key not in incidents:
-            incidents[key] = {
+        if not matches:
+            incidents[target_key] = {
                 **item,
-                "status": "PENDIENTE",
+                "status": "ACTIVO",
                 "notified": True,
-                "reopened_notified": False,
                 "reopened_roads": [],
+                "road_open": False,
             }
-
-            alerts.append(
-                format_new_incident(item)
-            )
+            alerts.append(format_new_incident(item))
             continue
 
-        current = incidents[key]
-        reopened_roads = {
-            _clean(value).lower()
-            for value in current.get("reopened_roads", [])
-        }
+        primary_key = target_key if target_key in matches else matches[0]
+        current = dict(incidents[primary_key])
+        previous_roads = set()
+        reopened_roads = set()
+        merged_details = {}
+        merged_situations = set()
 
-        # Una carretera que desapareció previamente y vuelve a aparecer
-        # representa un NUEVO corte, aunque pertenezca al mismo incendio.
-        reclosed = current_roads.intersection(reopened_roads)
-
-        if reclosed:
-            detail_items = []
-            for road in sorted(reclosed):
-                detail_items.append(
-                    _find_detail(item, road)
-                )
-
-            alert_item = {
-                **item,
-                "road_details": detail_items,
-                "road": ", ".join(
-                    detail.get("road", "")
-                    for detail in detail_items
-                    if detail.get("road")
-                ),
-            }
-
-            alerts.append(
-                format_new_incident(alert_item)
+        for key in matches:
+            previous_roads.update(_road_names(incidents[key]))
+            merged_situations.update(_situation_ids(incidents[key]))
+            for detail in _road_details(incidents[key]):
+                merged_details[_clean(detail.get("road")).lower()] = detail
+            reopened_roads.update(
+                _clean(value).lower()
+                for value in incidents[key].get("reopened_roads", [])
+                if _clean(value)
             )
 
-            reopened_roads.difference_update(reclosed)
+        for key in matches:
+            if key != primary_key:
+                incidents.pop(key, None)
 
-        # Actualiza la fotografía actual sin acumular carreteras que ya no
-        # figuran en INFOCAR.
+        effective_item = dict(item)
+        if _clean(item.get("fire")).lower() in ("", "incendio forestal"):
+            effective_item["fire"] = current.get("fire", "Incendio forestal")
+        for field in ("province", "municipality"):
+            if _clean(item.get(field)).lower() in ("", "no disponible"):
+                effective_item[field] = current.get(field, "No disponible")
+
+        added_roads = current_roads.difference(previous_roads)
+        if added_roads:
+            details = [
+                _detail_for_road(item, road)
+                for road in sorted(added_roads)
+            ]
+            alert_item = {
+                **effective_item,
+                "road_details": details,
+                "road": ", ".join(detail["road"] for detail in details),
+            }
+            alerts.append(format_new_incident(alert_item))
+            reopened_roads.difference_update(added_roads)
+
         for field, value in item.items():
-            if value in ("", None):
-                continue
-            current[field] = value
+            if value not in ("", None, "No disponible", "Incendio forestal"):
+                current[field] = value
 
-        if item.get("road_details") is not None:
-            current["road_details"] = item["road_details"]
-
+        for detail in _road_details(item):
+            merged_details[_clean(detail.get("road")).lower()] = detail
+        current["road_details"] = list(merged_details.values())
+        current["road"] = ", ".join(
+            detail["road"] for detail in current["road_details"]
+        )
+        merged_situations.update(_situation_ids(item))
+        current["situation_ids"] = sorted(merged_situations)
         current["reopened_roads"] = sorted(reopened_roads)
+        current["status"] = "ACTIVO"
+        current["notified"] = True
+        current["road_open"] = False
+
+        if primary_key != target_key and target_key not in incidents:
+            incidents.pop(primary_key, None)
+            primary_key = target_key
+        incidents[primary_key] = current
 
     return alerts
-
-
-def _reopening_key(item):
-    return "|".join(
-        [
-            _clean(item.get("fire")).lower(),
-            _clean(item.get("province")).lower(),
-            _clean(item.get("municipality")).lower(),
-            _clean(item.get("road")).lower(),
-            _clean(item.get("section")).lower(),
-            _clean(item.get("reopened_at")).lower(),
-        ]
-    )
 
 
 def process_reopenings(state, reopenings):
     alerts = []
     incidents = state.setdefault("incidents", {})
 
-    for item in reopenings:
-        fire = _clean(item.get("fire")).lower()
-        province = _clean(item.get("province")).lower()
-        municipality = _clean(item.get("municipality")).lower()
+    for item in reopenings or []:
         road = _clean(item.get("road"))
+        if not road:
+            continue
 
-        # Para una reapertura, la carretera es el identificador operativo.
-        # No exigimos que nombre de incendio o municipio coincidan exactamente,
-        # porque INFOCA puede actualizar esos datos entre dos ejecuciones.
-        matching_key = None
+        target_key = _clean(item.get("incident_key")).lower()
+        matching_key = target_key if target_key in incidents else None
 
-        # Primera opción: carretera + provincia.
-        for key, current in incidents.items():
-            current_province = _clean(current.get("province")).lower()
-            active_roads = _active_road_names(current)
-            if (
-                road
-                and road.lower() in active_roads
-                and (not province or current_province == province)
-            ):
-                matching_key = key
-                break
-
-        # Segunda opción: carretera sin exigir provincia, solo si no hubo
-        # coincidencia anterior. Esto permite absorber cambios de agrupación.
         if matching_key is None:
+            item_situations = _situation_ids(item)
             for key, current in incidents.items():
-                active_roads = _active_road_names(current)
-                if road and road.lower() in active_roads:
+                if item_situations and item_situations.intersection(_situation_ids(current)):
+                    matching_key = key
+                    break
+
+        if matching_key is None:
+            province = _clean(item.get("province")).lower()
+            for key, current in incidents.items():
+                if road.lower() not in _road_names(current):
+                    continue
+                current_province = _clean(current.get("province")).lower()
+                if not province or province in current_province:
                     matching_key = key
                     break
 
@@ -375,340 +334,99 @@ def process_reopenings(state, reopenings):
             continue
 
         current = incidents[matching_key]
-
-        if not road:
-            continue
-
-        # IMPORTANTE v38:
-        # fetch_official_reopenings() ya ha comparado la fotografía anterior
-        # con la fotografía ACTUAL de INFOCAR/DGT y solo devuelve la carretera
-        # cuando ha desaparecido de la fotografía actual.
-        #
-        # ``current`` es precisamente la fotografía anterior guardada en
-        # state.json, por lo que la carretera seguirá apareciendo ahí.
-        # No debemos volver a comprobarla contra ``current``.
-        reopen_key = _reopening_key(item)
-        if current.get("last_reopening_key") == reopen_key:
-            continue
-
         reopened_roads = {
             _clean(value).lower()
             for value in current.get("reopened_roads", [])
+            if _clean(value)
         }
+        if road.lower() in reopened_roads:
+            continue
+
         reopened_roads.add(road.lower())
-
+        remaining = [
+            detail
+            for detail in _road_details(current)
+            if _clean(detail.get("road")).lower() != road.lower()
+        ]
+        current["road_details"] = remaining
+        current["road"] = ", ".join(detail["road"] for detail in remaining)
         current["reopened_roads"] = sorted(reopened_roads)
-        current["last_reopening_key"] = reopen_key
-        current["road_open"] = True
-
-        alerts.append(
-            format_reopening(item)
-        )
+        current["status"] = "ACTIVO" if remaining else "REABIERTO"
+        current["road_open"] = not remaining
+        alerts.append(format_reopening(item))
 
     return alerts
 
 
-
-# ============================================================
-# CONTROL DEL BOT / LÍNEA BASE
-# ============================================================
-
 def initialize_baseline(state, detected):
-    """
-    Reinicia la memoria de vigilancia tomando ``detected`` como fotografía
-    inicial. No genera avisos.
-
-    Se utiliza con las órdenes Iniciar/Reiniciar para que los cortes que ya
-    existían antes de comenzar la vigilancia no aparezcan como nuevos.
-    """
     incidents = {}
-
     for item in detected or []:
         key = incident_key(item)
         if not key:
             continue
-
         incidents[key] = {
             **item,
-            "status": "BASELINE",
+            "status": "ACTIVO",
             "notified": True,
-            "reopened_notified": False,
             "reopened_roads": [],
+            "road_open": False,
         }
-
     state["incidents"] = incidents
     state["monitoring_initialized"] = True
     state["baseline_at"] = _datetime.datetime.now().isoformat()
 
 
 def format_status(state):
-    """Genera el resumen que se devuelve mediante el botón Estado."""
-    active = state.get("monitoring_active", True)
-    initialized = state.get("monitoring_initialized", False)
     incidents = state.get("incidents", {})
-
-    active_roads = set()
-    fires = set()
-
-    for item in incidents.values():
-        if not isinstance(item, dict):
-            continue
-
-        fires.add(_clean(item.get("fire")) or "Incendio forestal")
-
-        details = _road_details(item)
-        for detail in details:
-            road = _clean(detail.get("road"))
-            if road:
-                active_roads.add(road)
-
-    last_run = _clean(state.get("last_run")) or "No disponible"
-    baseline = _clean(state.get("baseline_at")) or "No disponible"
-
-    estado = "🟢 ACTIVA" if active else "⏸️ PAUSADA"
-    inicializada = "Sí" if initialized else "No"
-
+    active_roads = {
+        detail["road"]
+        for item in incidents.values()
+        if isinstance(item, dict)
+        for detail in _road_details(item)
+        if detail.get("road")
+    }
     lines = [
         "📊 <b>ESTADO DE LA VIGILANCIA</b>",
         "",
-        f"Estado: <b>{estado}</b>",
-        f"Inicializada: {inicializada}",
-        f"Incendios registrados: <b>{len(fires)}</b>",
-        f"Carreteras registradas: <b>{len(active_roads)}</b>",
-        f"Última ejecución: {last_run}",
-        f"Línea base: {baseline}",
+        f"Incidentes registrados: <b>{len(incidents)}</b>",
+        f"Carreteras cortadas: <b>{len(active_roads)}</b>",
+        f"Última ejecución: {_escape(state.get('last_run') or 'No disponible')}",
     ]
-
-    if active_roads:
-        lines.extend([
-            "",
-            "<b>Carreteras registradas:</b>",
-        ])
-        for road in sorted(active_roads):
-            lines.append(f"• {_escape(road)}")
-
     return "\n".join(lines)
 
 
-def _snapshot_key(item):
-    fire = _clean(item.get("fire")).lower()
-    municipality = _clean(item.get("municipality")).lower()
-    province = _clean(item.get("province")).lower()
-
-    # Un incendio con nombre concreto es una única entidad aunque afecte
-    # a varias provincias.
-    if fire and fire != "incendio forestal":
-        return f"name|{fire}"
-
-    return f"place|{municipality}|{province}"
-
-def _merge_snapshot_items(items):
-    """
-    Consolida defensivamente la fotografía antes de mostrarla.
-
-    Las carreteras siguen siendo las que ya vienen de INFOCAR; aquí solo
-    evitamos que una variación de metadatos INFOCA produzca dos informes
-    visuales del mismo incendio.
-    """
-    groups = {}
-
-    for item in items or []:
-        key = _snapshot_key(item)
-
-        if key not in groups:
-            groups[key] = dict(item)
-
-            # IMPORTANT:
-            # Preserve the road_details already supplied by sources.py.
-            # These details contain the PK extracted from INFOCAR/DGT.
-            groups[key]["road_details"] = [
-                dict(detail)
-                for detail in (item.get("road_details") or [])
-                if isinstance(detail, dict)
-            ]
-
-            # Compatibility fallback for older item structures that only
-            # provided a plain "road" string and a shared "section".
-            if not groups[key]["road_details"]:
-                groups[key]["road_details"] = _road_details(item)
-
-            groups[key]["road"] = ", ".join(
-                detail.get("road", "")
-                for detail in groups[key]["road_details"]
-                if detail.get("road")
-            )
-
-            continue
-
-        current = groups[key]
-
-        for field in (
-            "fire",
-            "province",
-            "municipality",
-            "source_url",
-            "source_title",
-        ):
-            current_value = _clean(current.get(field))
-            incoming_value = _clean(item.get(field))
-
-            if (
-                not current_value
-                or current_value.lower() == "no disponible"
-                or current_value.lower() == "incendio forestal"
-            ) and incoming_value:
-                current[field] = item.get(field)
-
-        existing = {
-            (
-                _clean(detail.get("road")).lower(),
-                _clean(detail.get("section")).lower(),
-                _clean(detail.get("direction")).lower(),
-            )
-            for detail in current.get("road_details", [])
-            if isinstance(detail, dict)
-        }
-
-        for detail in _road_details(item):
-            road_name = _clean(detail.get("road"))
-            section = _clean(detail.get("section"))
-            direction = _clean(detail.get("direction"))
-
-            if not road_name:
-                continue
-
-            key_detail = (
-                road_name.lower(),
-                section.lower(),
-                direction.lower(),
-            )
-
-            # If the current snapshot has the same road without a PK but
-            # the incoming item provides one, replace the incomplete detail.
-            replaced = False
-            for existing_detail in current["road_details"]:
-                if not isinstance(existing_detail, dict):
-                    continue
-
-                if (
-                    _clean(existing_detail.get("road")).lower()
-                    == road_name.lower()
-                ):
-                    existing_section = _clean(
-                        existing_detail.get("section")
-                    )
-
-                    if not existing_section and section:
-                        existing_detail.update(
-                            {
-                                "road": road_name,
-                                "section": section,
-                                "direction": direction,
-                            }
-                        )
-                    replaced = True
-                    break
-
-            if replaced:
-                continue
-
-            if key_detail in existing:
-                continue
-
-            current["road_details"].append(
-                {
-                    "road": road_name,
-                    "section": section,
-                    "direction": direction,
-                }
-            )
-            existing.add(key_detail)
-
-        current["road"] = ", ".join(
-            detail.get("road", "")
-            for detail in current["road_details"]
-            if detail.get("road")
-        )
-
-    return list(groups.values())
-
-
 def format_snapshot(detected, captured_at=None):
-    """
-    Genera la fotografía actual.
-
-    IMPORTANTE:
-    Las carreteras que se muestran aquí proceden de INFOCAR/DGT.
-    INFOCA solo aporta el nombre/municipio/provincia.
-    """
     captured = _format_detected_at(
-        captured_at or datetime.now().isoformat()
+        captured_at or _datetime.datetime.now().isoformat()
     )
-
-    items = _merge_snapshot_items(detected)
-
-    lines = [
-        f"<b>🕐 ACTUALIZACIÓN: {_escape(captured)}</b>",
-        "",
-    ]
+    items = list(detected or [])
+    lines = [f"<b>🕐 ACTUALIZACIÓN: {_escape(captured)}</b>", ""]
 
     if not items:
-        lines.extend(
-            [
-                "🟢 <b>No constan carreteras cortadas por incendio "
-                "en la fotografía actual.</b>",
-                "",
-                "Esta fotografía queda guardada como referencia "
-                "para la siguiente comprobación.",
-            ]
+        lines.append(
+            "🟢 <b>No constan carreteras cortadas por incendio en Andalucía.</b>"
         )
         return "\n".join(lines)
 
-    lines.append(
-        f"🚧 <b>Incendios con carreteras cortadas: {len(items)}</b>"
-    )
-
+    lines.append(f"🚧 <b>Incidentes con carreteras cortadas: {len(items)}</b>")
     for index, item in enumerate(items, start=1):
-        fire = _escape(
-            item.get("fire") or "Incendio forestal"
-        )
-        municipality = _escape(
-            item.get("municipality") or "No disponible"
-        )
-        province = _escape(
-            item.get("province") or "No disponible"
-        )
-
         lines.extend(
             [
                 "",
-                f"<b>{index}. {fire}</b>",
-                f"📍 {municipality} ({province})",
+                f"<b>{index}. {_escape(item.get('fire') or 'Incendio forestal')}</b>",
+                _format_location(item),
                 "<b>🚧 CARRETERAS AFECTADAS</b>",
             ]
         )
-
-        details = _road_details(item)
-
-        if not details:
-            lines.append("• No hay carreteras detalladas.")
-            continue
-
-        for detail in details:
-            road_line = _format_road_line(detail)
-            if road_line:
-                lines.append(road_line)
-
-        detected_at = _format_detected_at(
-            item.get("detected_at")
-        )
-
+        for detail in _road_details(item):
+            line = _format_road_line(detail)
+            if line:
+                lines.append(line)
         lines.extend(
             [
                 "",
-                f"🕐 Detectado: {_escape(detected_at)}",
-                "<b>DGT:</b> <i>Confirmado</i>",
-                "<b>INFOCA:</b> <i>Confirmado</i>",
+                f"🕐 Detectado: {_escape(_format_detected_at(item.get('detected_at')))}",
+                *_confirmation_lines(item),
             ]
         )
 
