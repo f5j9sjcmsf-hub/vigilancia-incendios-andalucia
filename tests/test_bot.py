@@ -113,6 +113,90 @@ class DatexTests(unittest.TestCase):
             sources.fetch_official_incidents()
 
 
+class InfocaGroupingTests(unittest.TestCase):
+    @patch("sources.get")
+    def test_parser_reads_the_real_infoca_body(self, get):
+        html = """<!doctype html><html><head><title>Emergencias 112</title></head>
+        <body>
+          <div class="field--name-body">Navegación sobre la A-999</div>
+          <div class="cuerpo_noticia">
+            <div id="zonaAmpliarTexto1">
+              El incendio forestal de Niebla afecta a la A-493 y la SE-4401.
+              Se ha evacuado a 658 personas y han trabajado 26 aeronaves.
+            </div>
+          </div>
+        </body></html>"""
+        get.return_value.content = html.encode("utf-8")
+        get.return_value.text = html
+
+        result = sources.parse_infoca_article(
+            {
+                "title": "El Plan Infoca trabaja en el incendio de Niebla",
+                "url": "https://www.juntadeandalucia.es/incendio/niebla",
+            }
+        )
+
+        self.assertEqual(result["fire"], "IFF Niebla")
+        self.assertEqual(result["municipality"], "Niebla")
+        self.assertEqual(result["roads"], ["A-493", "SE-4401"])
+
+    def test_road_parser_does_not_turn_prose_numbers_into_roads(self):
+        roads = sources.extract_roads(
+            "Evacuadas a 658 personas, 26 aeronaves y corte en la A-493."
+        )
+        self.assertEqual(roads, ["A-493"])
+
+    @patch("sources.fetch_infoca_fires")
+    @patch("sources._fetch_datex_closures_with_status")
+    def test_one_infoca_fire_groups_datex_situations_across_provinces(
+        self,
+        fetch_dgt,
+        fetch_infoca,
+    ):
+        roads = (
+            ("A-493", "Huelva", "Nerva", "s1"),
+            ("HU-4103", "Huelva", "Berrocal", "s2"),
+            ("SE-6400", "Sevilla", "El Madroño", "s3"),
+            ("SE-4401", "Sevilla", "El Castillo de las Guardas", "s4"),
+        )
+        fetch_dgt.return_value = (
+            [
+                {
+                    "road": road,
+                    "section": "PK 0–1",
+                    "direction": "",
+                    "province": province,
+                    "municipality": municipality,
+                    "location_text": f"{municipality} ({province})",
+                    "situation_id": situation,
+                    "datex_id": f"record-{situation}",
+                    "detected_at": "14/08/2026 00:02",
+                }
+                for road, province, municipality, situation in roads
+            ],
+            True,
+        )
+        fetch_infoca.return_value = [
+            {
+                "fire": "IFF Niebla",
+                "province": "Huelva",
+                "municipality": "Niebla",
+                "roads": [road for road, _, _, _ in roads],
+            }
+        ]
+
+        result = sources.fetch_official_incidents()
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["fire"], "IFF Niebla")
+        self.assertEqual(result[0]["province"], "Huelva, Sevilla")
+        self.assertEqual(result[0]["situation_ids"], ["s1", "s2", "s3", "s4"])
+        self.assertEqual(
+            [detail["road"] for detail in result[0]["road_details"]],
+            ["A-493", "HU-4103", "SE-6400", "SE-4401"],
+        )
+
+
 class TransitionTests(unittest.TestCase):
     def test_partial_reopening_is_deduplicated_and_can_reclose(self):
         state = {}
@@ -146,6 +230,35 @@ class TransitionTests(unittest.TestCase):
         )
         self.assertEqual(logic.process_incidents(state, [enriched]), [])
         self.assertIn("infoca:name|incendio de prueba", state["incidents"])
+
+    def test_grouping_migrates_four_incidents_without_duplicate_alert(self):
+        state = {}
+        separated = [
+            incident(road, identity=f"dgt:{situation}", situations=(situation,))
+            for road, situation in (
+                ("A-493", "s1"),
+                ("HU-4103", "s2"),
+                ("SE-6400", "s3"),
+                ("SE-4401", "s4"),
+            )
+        ]
+        logic.initialize_baseline(state, separated)
+        grouped = incident(
+            "A-493",
+            "HU-4103",
+            "SE-6400",
+            "SE-4401",
+            identity="infoca:name|iff niebla",
+            situations=("s1", "s2", "s3", "s4"),
+        )
+        grouped["fire"] = "IFF Niebla"
+        grouped["province"] = "Huelva, Sevilla"
+
+        self.assertEqual(logic.process_incidents(state, [grouped]), [])
+        self.assertEqual(list(state["incidents"]), ["infoca:name|iff niebla"])
+        current = next(iter(state["incidents"].values()))
+        self.assertEqual(len(current["road_details"]), 4)
+
 
     def test_complete_reopening_removes_last_active_road(self):
         state = {}
