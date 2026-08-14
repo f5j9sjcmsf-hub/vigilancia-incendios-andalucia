@@ -43,7 +43,7 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Vigilar y guardar estado cada 15 minutos
-        timeout-minutes: 350
+        timeout-minutes: 95
         run: |
           set -euo pipefail
 
@@ -51,10 +51,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           # Un run programado de GitHub puede retrasarse o descartarse. Cada
-          # run que sí comienza mantiene la vigilancia durante 5 h 30 min;
+          # run que sí comienza mantiene la vigilancia durante unos 75 minutos;
           # los cuatro cron por hora aportan los relevos de reserva.
-          for iteration in $(seq 1 23); do
-            echo "Comprobación $iteration/23"
+          for iteration in $(seq 1 6); do
+            echo "Comprobación $iteration/6"
             python src/main.py
 
             if git diff --quiet -- data/state.json; then
@@ -69,7 +69,7 @@ jobs:
               git push
             fi
 
-            if [ "$iteration" -lt 23 ]; then
+            if [ "$iteration" -lt 6 ]; then
               sleep 900
             fi
           done
