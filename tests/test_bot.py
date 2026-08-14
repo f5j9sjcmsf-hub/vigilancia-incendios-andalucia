@@ -1,7 +1,6 @@
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -220,6 +219,19 @@ class TransitionTests(unittest.TestCase):
         self.assertIn("A-2", alerts[0])
         self.assertNotIn("• <b>A-1</b>", alerts[0])
 
+    def test_changed_kilometer_section_generates_one_update(self):
+        state = {}
+        previous = incident("A-1")
+        current = incident("A-1")
+        current["road_details"][0]["section"] = "PK 2–4"
+        logic.initialize_baseline(state, [previous])
+
+        alerts = logic.process_incidents(state, [current])
+
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("ACTUALIZACIÓN DE CORTE", alerts[0])
+        self.assertIn("• <b>A-1</b>\n<i>Pk 2 – 4</i>", alerts[0])
+
     def test_metadata_change_with_same_situation_does_not_duplicate(self):
         state = {}
         logic.initialize_baseline(state, [incident("A-1")])
@@ -321,6 +333,13 @@ class MessageTests(unittest.TestCase):
         self.assertIn("Sevilla", message)
         self.assertIn("Incidentes con carreteras cortadas: 2", message)
 
+    def test_closed_road_format_uses_heading_and_separate_pk_line(self):
+        message = logic.format_snapshot([incident("HU-3106")])
+        self.assertIn("\n<b>🔴CARRETERAS CORTADAS</b>\n\n", message)
+        self.assertIn("• <b>HU-3106</b>\n<i>Pk 1</i>", message)
+        self.assertNotIn("CARRETERAS AFECTADAS", message)
+        self.assertNotIn("HU-3106</b> —", message)
+
     def test_long_telegram_message_is_split_at_line_boundaries(self):
         text = "<b>carretera</b>\n" * 400
         chunks = telegram._split_message(text)
@@ -330,20 +349,30 @@ class MessageTests(unittest.TestCase):
 
 
 class ReliabilityTests(unittest.TestCase):
-    def test_snapshot_is_due_once_per_hour(self):
-        now = datetime.fromisoformat("2026-08-14T12:00:00+02:00")
-        self.assertFalse(
-            main._snapshot_due(
-                {"last_snapshot_at": (now - timedelta(minutes=30)).isoformat()},
-                now,
-            )
-        )
-        self.assertTrue(
-            main._snapshot_due(
-                {"last_snapshot_at": (now - timedelta(minutes=60)).isoformat()},
-                now,
-            )
-        )
+    @patch("main.save_state")
+    @patch("main.send_message")
+    @patch("main.fetch_official_reopenings", return_value=[])
+    @patch("main.fetch_official_incidents")
+    @patch("main.load_state")
+    def test_unchanged_snapshot_never_repeats_a_telegram_report(
+        self,
+        load,
+        fetch_incidents,
+        _fetch_reopenings,
+        send,
+        save,
+    ):
+        current = incident("HU-3106")
+        state = {}
+        logic.initialize_baseline(state, [current])
+        state["last_snapshot_at"] = "2026-08-14T00:00:00+02:00"
+        load.return_value = state
+        fetch_incidents.return_value = [current]
+
+        main.main()
+
+        send.assert_not_called()
+        save.assert_called_once()
 
     def test_state_path_is_independent_of_working_directory(self):
         self.assertEqual(storage.STATE_FILE, PROJECT_ROOT / "data" / "state.json")
