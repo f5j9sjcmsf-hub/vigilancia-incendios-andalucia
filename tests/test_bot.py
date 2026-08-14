@@ -360,6 +360,31 @@ class ReliabilityTests(unittest.TestCase):
         self.assertIn('if [ "$iteration" -lt 6 ]', workflow)
         self.assertNotIn("seq 1 23", workflow)
 
+    def test_workflow_dispatches_its_own_relay(self):
+        workflow = (
+            PROJECT_ROOT / ".github" / "workflows" / "vigilancia.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("actions: write", workflow)
+        self.assertIn("needs: vigilancia", workflow)
+        self.assertIn(
+            "always() && needs.vigilancia.result != 'cancelled'",
+            workflow,
+        )
+        self.assertIn("run: sleep 900", workflow)
+        self.assertIn("Lanzar el siguiente relevo", workflow)
+        self.assertIn("actions/workflows/vigilancia.yml/dispatches", workflow)
+        self.assertIn("--data '{\"ref\":\"main\"}'", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+
+    def test_workflow_has_no_scheduled_runs(self):
+        workflow = (
+            PROJECT_ROOT / ".github" / "workflows" / "vigilancia.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("schedule:", workflow)
+        self.assertNotIn("cron:", workflow)
+
     @patch("main.save_state")
     @patch("main.send_message")
     @patch("main.fetch_official_reopenings", return_value=[])
