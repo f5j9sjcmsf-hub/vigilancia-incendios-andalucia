@@ -18,7 +18,7 @@ por incendios forestales en las ocho provincias andaluzas.
 
 La vigilancia se programa a los minutos `07`, `22`, `37` y `52` de cada hora,
 las 24 horas, en la zona `Europe/Madrid`. Cada ejecución activa un vigilante
-que comprueba las fuentes cada 15 minutos durante unas 5 horas y media. Los
+que comprueba las fuentes cada 15 minutos durante unos 75 minutos. Los
 disparos nuevos quedan como relevo, lo que evita depender de que GitHub cumpla
 puntualmente cada cron. Telegram solo recibe una línea base al inicializar el
 estado y, después, avisos cuando cambian realmente los cortes o reaperturas.
