@@ -385,6 +385,21 @@ class ReliabilityTests(unittest.TestCase):
         self.assertNotIn("schedule:", workflow)
         self.assertNotIn("cron:", workflow)
 
+    def test_telegram_test_workflow_is_manual_only(self):
+        workflow = (
+            PROJECT_ROOT / ".github" / "workflows" / "prueba_telegram.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("schedule:", workflow)
+        self.assertNotIn("cron:", workflow)
+        self.assertIn("secrets.TELEGRAM_BOT_TOKEN", workflow)
+        self.assertIn("secrets.TELEGRAM_CHAT_ID", workflow)
+        self.assertIn(
+            "✅ Canal de avisos configurado correctamente.",
+            workflow,
+        )
+
     @patch("main.save_state")
     @patch("main.send_message")
     @patch("main.fetch_official_reopenings", return_value=[])
