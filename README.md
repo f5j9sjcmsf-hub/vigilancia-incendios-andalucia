@@ -16,15 +16,14 @@ por incendios forestales en las ocho provincias andaluzas.
 - Un cambio real en el tramo kilométrico genera un aviso de actualización.
 - Las reaperturas se deduplican y un cierre posterior vuelve a notificarse.
 
-La vigilancia se programa a los minutos `07`, `22`, `37` y `52` de cada hora,
-las 24 horas, en la zona `Europe/Madrid`. Cada ejecución activa un vigilante
-que comprueba las fuentes cada 15 minutos durante unos 75 minutos. Los
-vigilantes correctos lanzan directamente su siguiente relevo. Los cuatro
-disparos programados por hora quedan como respaldo si la cadena se interrumpe,
-lo que evita depender de que GitHub cumpla puntualmente cada cron. Telegram
-solo recibe una línea base al inicializar el estado y, después, avisos cuando
-cambian realmente los cortes o reaperturas. Si la fotografía oficial no cambia,
-no se repite ningún informe.
+La vigilancia se inicia manualmente una sola vez mediante `workflow_dispatch`.
+Cada ejecución comprueba las fuentes cada 15 minutos durante unos 75 minutos y
+lanza directamente su siguiente relevo. No existen disparos `schedule` que
+puedan solaparse o ser descartados por GitHub. Si la vigilancia falla, el job de
+relevo espera 15 minutos antes de reintentarlo; una cancelación manual sí detiene
+la cadena. Telegram solo recibe una línea base al inicializar el estado y,
+después, avisos cuando cambian realmente los cortes o reaperturas. Si la
+fotografía oficial no cambia, no se repite ningún informe.
 
 ## Fiabilidad
 
@@ -32,6 +31,7 @@ no se repite ningún informe.
   como ausencia de cortes.
 - Si Telegram no confirma un envío, el estado no avanza y el aviso se
   reintenta en la ejecución siguiente.
+- El relevo se ejecuta en un job independiente incluso tras un fallo temporal.
 - El estado se escribe de forma atómica en `data/state.json`.
 - El workflow ejecuta las pruebas antes de consultar las fuentes reales.
 
