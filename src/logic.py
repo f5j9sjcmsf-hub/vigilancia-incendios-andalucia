@@ -107,11 +107,13 @@ def _format_location(item):
 
 def _format_road_line(detail):
     road = _escape(detail.get("road"))
-    section = _escape(detail.get("section"))
+    section = _clean(detail.get("section"))
     if not road:
         return ""
     if section:
-        return f"• <b>{road}</b> — <i>{section}</i>"
+        section = re.sub(r"^PK\s*", "", section, flags=re.IGNORECASE)
+        section = re.sub(r"\s*[-‐‑‒–—]\s*", " – ", section)
+        return f"• <b>{road}</b>\n<i>Pk {_escape(section)}</i>"
     return f"• <b>{road}</b>"
 
 
@@ -129,7 +131,34 @@ def format_new_incident(item):
         f"<i>{_escape(item.get('fire') or 'Incendio forestal')}</i>",
         _format_location(item),
         "",
-        "<b>🚧 CARRETERAS AFECTADAS</b>",
+        "<b>🔴CARRETERAS CORTADAS</b>",
+        "",
+    ]
+
+    for detail in _road_details(item):
+        line = _format_road_line(detail)
+        if line:
+            lines.append(line)
+
+    lines.extend(
+        [
+            "",
+            f"🕐 Detectado: {_escape(_format_detected_at(item.get('detected_at')))}",
+            *_confirmation_lines(item),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_incident_update(item):
+    lines = [
+        "<b>🔄 ACTUALIZACIÓN DE CORTE POR INCENDIO</b>",
+        "",
+        f"<i>{_escape(item.get('fire') or 'Incendio forestal')}</i>",
+        _format_location(item),
+        "",
+        "<b>🔴CARRETERAS CORTADAS</b>",
+        "",
     ]
 
     for detail in _road_details(item):
@@ -148,11 +177,7 @@ def format_new_incident(item):
 
 
 def format_reopening(item):
-    road = _escape(item.get("road"))
-    section = _escape(item.get("section"))
-    road_line = f"🚧 <b>{road}</b>"
-    if section:
-        road_line += f" — <i>{section}</i>"
+    road_line = _format_road_line(item)
 
     return "\n".join(
         [
@@ -236,6 +261,7 @@ def process_incidents(state, detected):
         primary_key = target_key if target_key in matches else matches[0]
         current = dict(incidents[primary_key])
         previous_roads = set()
+        previous_details = {}
         reopened_roads = set()
         merged_details = {}
         merged_situations = set()
@@ -244,7 +270,9 @@ def process_incidents(state, detected):
             previous_roads.update(_road_names(incidents[key]))
             merged_situations.update(_situation_ids(incidents[key]))
             for detail in _road_details(incidents[key]):
-                merged_details[_clean(detail.get("road")).lower()] = detail
+                road_key = _clean(detail.get("road")).lower()
+                merged_details[road_key] = detail
+                previous_details[road_key] = detail
             reopened_roads.update(
                 _clean(value).lower()
                 for value in incidents[key].get("reopened_roads", [])
@@ -263,17 +291,40 @@ def process_incidents(state, detected):
                 effective_item[field] = current.get(field, "No disponible")
 
         added_roads = current_roads.difference(previous_roads)
-        if added_roads:
+        changed_roads = set()
+        incoming_details = {
+            _clean(detail.get("road")).lower(): detail
+            for detail in _road_details(item)
+        }
+        # Una migración que fusiona varias claves históricas no es una
+        # actualización operativa y no debe generar un aviso retrospectivo.
+        if len(matches) == 1:
+            for road in current_roads.intersection(previous_roads):
+                previous = previous_details.get(road, {})
+                incoming = incoming_details.get(road, {})
+                previous_signature = (
+                    _clean(previous.get("section")).lower(),
+                    _clean(previous.get("direction")).lower(),
+                )
+                incoming_signature = (
+                    _clean(incoming.get("section")).lower(),
+                    _clean(incoming.get("direction")).lower(),
+                )
+                if previous_signature != incoming_signature:
+                    changed_roads.add(road)
+
+        updated_roads = added_roads.union(changed_roads)
+        if updated_roads:
             details = [
                 _detail_for_road(item, road)
-                for road in sorted(added_roads)
+                for road in sorted(updated_roads)
             ]
             alert_item = {
                 **effective_item,
                 "road_details": details,
                 "road": ", ".join(detail["road"] for detail in details),
             }
-            alerts.append(format_new_incident(alert_item))
+            alerts.append(format_incident_update(alert_item))
             reopened_roads.difference_update(added_roads)
 
         for field, value in item.items():
@@ -415,7 +466,8 @@ def format_snapshot(detected, captured_at=None):
                 "",
                 f"<b>{index}. {_escape(item.get('fire') or 'Incendio forestal')}</b>",
                 _format_location(item),
-                "<b>🚧 CARRETERAS AFECTADAS</b>",
+                "<b>🔴CARRETERAS CORTADAS</b>",
+                "",
             ]
         )
         for detail in _road_details(item):

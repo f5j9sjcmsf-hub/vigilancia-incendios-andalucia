@@ -23,20 +23,6 @@ def _send_telegram(text, label):
     print(f"[TELEGRAM] {label}: enviado correctamente.")
 
 
-def _snapshot_due(state, now, minimum_minutes=55):
-    """Limita el resumen periódico aunque la vigilancia sea más frecuente."""
-    previous = state.get("last_snapshot_at")
-    if not previous:
-        return True
-    try:
-        previous_at = datetime.fromisoformat(str(previous).replace("Z", "+00:00"))
-    except ValueError:
-        return True
-    if previous_at.tzinfo is None:
-        previous_at = previous_at.replace(tzinfo=TIMEZONE)
-    return (now - previous_at).total_seconds() >= minimum_minutes * 60
-
-
 def main():
     """
     Vigilancia de todos los cortes por incendio publicados por INFOCAR/DGT
@@ -47,7 +33,7 @@ def main():
     GitHub Actions termina con error y la siguiente ejecución lo reintentará.
     """
     print("=" * 60)
-    print("VIGILANCIA DE INCENDIOS EN ANDALUCÍA v40")
+    print("VIGILANCIA DE INCENDIOS EN ANDALUCÍA v41")
     print("=" * 60)
 
     state = load_state()
@@ -90,13 +76,6 @@ def main():
     print(f"[VIGILANCIA] Cortes nuevos o ampliados: {len(incident_messages)}")
     for message in incident_messages:
         _send_telegram(message, "aviso de corte")
-
-    if _snapshot_due(state, captured):
-        _send_telegram(
-            format_snapshot(detected, captured_at),
-            "actualización de estado",
-        )
-        working_state["last_snapshot_at"] = captured_at
 
     working_state["monitoring_initialized"] = True
     working_state["last_run"] = captured_at
