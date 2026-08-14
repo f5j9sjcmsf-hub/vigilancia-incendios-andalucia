@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 env:
   TZ: Europe/Madrid
@@ -16,8 +17,8 @@ env:
   TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
 concurrency:
-  # Solo hay un vigilante activo. Los disparos nuevos quedan como relevo
-  # para cuando finalice la ventana actual.
+  # Solo hay un vigilante activo y un relevo pendiente. Cada ejecución
+  # correcta crea su sucesora; el cron queda como respaldo de recuperación.
   group: vigilancia-andalucia
   cancel-in-progress: false
 
@@ -73,3 +74,19 @@ jobs:
               sleep 900
             fi
           done
+
+      - name: Lanzar el siguiente relevo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail-with-body --silent --show-error \
+            --retry 3 \
+            --retry-all-errors \
+            --retry-delay 5 \
+            --max-time 30 \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/vigilancia.yml/dispatches" \
+            --data '{"ref":"main"}'
