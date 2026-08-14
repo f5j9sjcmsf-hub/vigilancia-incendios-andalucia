@@ -349,6 +349,17 @@ class MessageTests(unittest.TestCase):
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_workflow_window_is_75_minutes(self):
+        workflow = (
+            PROJECT_ROOT / ".github" / "workflows" / "vigilancia.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("timeout-minutes: 95", workflow)
+        self.assertIn("for iteration in $(seq 1 6)", workflow)
+        self.assertIn('echo "Comprobación $iteration/6"', workflow)
+        self.assertIn('if [ "$iteration" -lt 6 ]', workflow)
+        self.assertNotIn("seq 1 23", workflow)
+
     @patch("main.save_state")
     @patch("main.send_message")
     @patch("main.fetch_official_reopenings", return_value=[])
