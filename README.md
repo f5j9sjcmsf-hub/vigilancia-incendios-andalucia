@@ -13,14 +13,16 @@ por incendios forestales en las ocho provincias andaluzas.
 - Los mensajes de Telegram no muestran noticias, titulares ni enlaces.
 - Los cortes DGT sin coincidencia INFOCA también se notifican.
 - Una carretera añadida a un incendio existente genera un nuevo aviso.
+- Un cambio real en el tramo kilométrico genera un aviso de actualización.
 - Las reaperturas se deduplican y un cierre posterior vuelve a notificarse.
 
 La vigilancia se programa a los minutos `07`, `22`, `37` y `52` de cada hora,
 las 24 horas, en la zona `Europe/Madrid`. Cada ejecución activa un vigilante
 que comprueba las fuentes cada 15 minutos durante unas 5 horas y media. Los
 disparos nuevos quedan como relevo, lo que evita depender de que GitHub cumpla
-puntualmente cada cron. El resumen periódico de Telegram se limita a uno por
-hora; los cambios se avisan en la primera comprobación que los detecta.
+puntualmente cada cron. Telegram solo recibe una línea base al inicializar el
+estado y, después, avisos cuando cambian realmente los cortes o reaperturas.
+Si la fotografía oficial no cambia, no se repite ningún informe.
 
 ## Fiabilidad
 
