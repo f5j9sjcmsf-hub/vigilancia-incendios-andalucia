@@ -4,7 +4,7 @@
     "infoca:name|iff niebla": {
       "fire": "IFF Niebla",
       "province": "Huelva, Sevilla",
-      "municipality": "Nerva, Valverde del Camino, Zalamea la Real, Paterna del Campo, Berrocal, El Madroño, El Castillo de las Guardas, Niebla",
+      "municipality": "Nerva, Zalamea la Real, Valverde del Camino, Paterna del Campo, Berrocal, El Madroño, El Castillo de las Guardas, Niebla",
       "road": "HU-6106, HU-6104, HU-3106, HU-6108, A-493, HU-6107, HU-5104, HU-4103, HU-5103, VIASSE-538, SE-6400, SE-6402, SE-4401",
       "road_details": [
         {
@@ -162,17 +162,17 @@
       "incident_id": "infoca:name|iff niebla",
       "datex_ids": [
         "26563621",
-        "26457006",
-        "26451498",
         "26563620",
+        "26457006",
         "26572924",
-        "26501800",
-        "26508869",
+        "26451498",
         "26604789",
         "26501799",
+        "26508869",
+        "26501800",
+        "26563500",
         "26563498",
         "26563499",
-        "26563500",
         "26712331"
       ],
       "situation_ids": [
@@ -188,6 +188,6 @@
     }
   },
   "baseline_at": "2026-08-14T00:51:03.432344+02:00",
-  "last_run": "2026-08-14T23:22:17.024462+02:00",
+  "last_run": "2026-08-14T23:37:24.340494+02:00",
   "last_snapshot_at": "2026-08-14T07:18:04.648372+02:00"
 }
