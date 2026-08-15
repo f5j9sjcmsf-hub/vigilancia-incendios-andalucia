@@ -83,7 +83,7 @@ jobs:
   relevo:
     name: Preparar siguiente vigilancia
     needs: vigilancia
-    if: ${{ always() && needs.vigilancia.result != 'cancelled' }}
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
