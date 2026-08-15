@@ -4,34 +4,12 @@
     "infoca:name|iff niebla": {
       "fire": "IFF Niebla",
       "province": "Huelva, Sevilla",
-      "municipality": "Paterna del Campo, Nerva, Valverde del Camino, Berrocal, El Madroño, El Castillo de las Guardas, Niebla",
-      "road": "HU-6106, HU-6108, A-493, HU-6107, HU-4103, VIASSE-538, SE-6400, SE-6402, SE-4401",
+      "municipality": "Valverde del Camino, Berrocal, El Madroño, El Castillo de las Guardas, Niebla",
+      "road": "A-493, HU-6107, HU-4103, VIASSE-538, SE-6400, SE-6402, SE-4401, HU-5104",
       "road_details": [
         {
-          "road": "HU-6106",
-          "section": "PK 0–3.8",
-          "direction": "unspecifiedCarriageway",
-          "datex_ids": [
-            "26563621"
-          ],
-          "situation_ids": [
-            "22228123"
-          ]
-        },
-        {
-          "road": "HU-6108",
-          "section": "PK 1–6.5",
-          "direction": "unspecifiedCarriageway",
-          "datex_ids": [
-            "26572924"
-          ],
-          "situation_ids": [
-            "22228123"
-          ]
-        },
-        {
           "road": "A-493",
-          "section": "PK 4.5–24.9",
+          "section": "PK 14.7–24.9",
           "direction": "unspecifiedCarriageway",
           "datex_ids": [
             "26457006"
@@ -105,6 +83,17 @@
           "situation_ids": [
             "22479268"
           ]
+        },
+        {
+          "road": "HU-5104",
+          "section": "PK 8–17.3",
+          "direction": "unspecifiedCarriageway",
+          "datex_ids": [
+            "26784822"
+          ],
+          "situation_ids": [
+            "22277450"
+          ]
         }
       ],
       "section": "",
@@ -117,14 +106,13 @@
       "dgt": "Confirmado",
       "incident_id": "infoca:name|iff niebla",
       "datex_ids": [
-        "26572924",
-        "26563621",
         "26457006",
-        "26508869",
+        "26784822",
         "26501799",
-        "26563499",
-        "26563498",
+        "26508869",
         "26563500",
+        "26563498",
+        "26563499",
         "26712331"
       ],
       "situation_ids": [
@@ -138,13 +126,14 @@
       "reopened_roads": [
         "hu-3106",
         "hu-5103",
-        "hu-5104",
-        "hu-6104"
+        "hu-6104",
+        "hu-6106",
+        "hu-6108"
       ],
       "road_open": false
     }
   },
   "baseline_at": "2026-08-14T00:51:03.432344+02:00",
-  "last_run": "2026-08-15T15:23:16.305267+02:00",
+  "last_run": "2026-08-15T23:34:02.730339+02:00",
   "last_snapshot_at": "2026-08-14T07:18:04.648372+02:00"
 }
