@@ -4,8 +4,8 @@
     "infoca:name|iff niebla": {
       "fire": "IFF Niebla",
       "province": "Huelva, Sevilla",
-      "municipality": "Nerva, Paterna del Campo, Valverde del Camino, Zalamea la Real, Berrocal, El Madroño, El Castillo de las Guardas, Niebla",
-      "road": "HU-6106, HU-6104, HU-6108, A-493, HU-6107, HU-5104, HU-4103, VIASSE-538, SE-6400, SE-6402, SE-4401",
+      "municipality": "Nerva, Valverde del Camino, Paterna del Campo, Berrocal, El Madroño, El Castillo de las Guardas, Niebla",
+      "road": "HU-6106, HU-6108, A-493, HU-6107, HU-5104, HU-4103, VIASSE-538, SE-6400, SE-6402, SE-4401",
       "road_details": [
         {
           "road": "HU-6106",
@@ -13,17 +13,6 @@
           "direction": "unspecifiedCarriageway",
           "datex_ids": [
             "26563621"
-          ],
-          "situation_ids": [
-            "22228123"
-          ]
-        },
-        {
-          "road": "HU-6104",
-          "section": "PK 0–3.93",
-          "direction": "unspecifiedCarriageway",
-          "datex_ids": [
-            "26563620"
           ],
           "situation_ids": [
             "22228123"
@@ -140,14 +129,13 @@
       "incident_id": "infoca:name|iff niebla",
       "datex_ids": [
         "26563621",
-        "26572924",
         "26457006",
-        "26563620",
+        "26572924",
         "26501799",
-        "26501800",
         "26508869",
-        "26563499",
+        "26501800",
         "26563498",
+        "26563499",
         "26563500",
         "26712331"
       ],
@@ -161,12 +149,13 @@
       "notified": true,
       "reopened_roads": [
         "hu-3106",
-        "hu-5103"
+        "hu-5103",
+        "hu-6104"
       ],
       "road_open": false
     }
   },
   "baseline_at": "2026-08-14T00:51:03.432344+02:00",
-  "last_run": "2026-08-15T08:46:39.516628+02:00",
+  "last_run": "2026-08-15T09:01:48.753677+02:00",
   "last_snapshot_at": "2026-08-14T07:18:04.648372+02:00"
 }
