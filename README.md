@@ -32,7 +32,8 @@ fotografía oficial no cambia, no se repite ningún informe.
 - Si Telegram no confirma un envío, el estado no avanza y el aviso se
   reintenta en la ejecución siguiente.
 - El relevo se ejecuta en un job independiente incluso tras un fallo temporal.
-- El estado se escribe de forma atómica en `data/state.json`.
+- El estado se escribe de forma atómica en `data/state.json` y se conserva en
+  la rama operativa `estado`, separada del código protegido de `main`.
 - El workflow ejecuta las pruebas antes de consultar las fuentes reales.
 
 ## Secretos de GitHub

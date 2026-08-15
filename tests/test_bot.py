@@ -335,10 +335,15 @@ class MessageTests(unittest.TestCase):
 
     def test_closed_road_format_uses_heading_and_separate_pk_line(self):
         message = logic.format_snapshot([incident("HU-3106")])
-        self.assertIn("\n<b>🔴CARRETERAS CORTADAS</b>\n\n", message)
+        self.assertIn("\n<b>🔴 CARRETERAS CORTADAS</b>\n\n", message)
         self.assertIn("• <b>HU-3106</b>\n<i>Pk 1</i>", message)
         self.assertNotIn("CARRETERAS AFECTADAS", message)
         self.assertNotIn("HU-3106</b> —", message)
+
+    def test_reopening_format_uses_green_dot(self):
+        message = logic.format_reopening(reopening("HU-3106"))
+        self.assertIn("<b>🟢 CARRETERA REABIERTA</b>", message)
+        self.assertNotIn("🔓", message)
 
     def test_long_telegram_message_is_split_at_line_boundaries(self):
         text = "<b>carretera</b>\n" * 400
@@ -384,6 +389,38 @@ class ReliabilityTests(unittest.TestCase):
 
         self.assertNotIn("schedule:", workflow)
         self.assertNotIn("cron:", workflow)
+
+    def test_workflow_writes_state_only_to_state_branch(self):
+        workflow = (
+            PROJECT_ROOT / ".github" / "workflows" / "vigilancia.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("git fetch origin estado", workflow)
+        self.assertIn(
+            "git show origin/estado:data/state.json > data/state.json",
+            workflow,
+        )
+        self.assertIn("git push origin HEAD:estado", workflow)
+        self.assertEqual(workflow.count("git push"), 1)
+
+    def test_external_actions_are_pinned_to_full_shas(self):
+        checkout = (
+            "actions/checkout@"
+            "3d3c42e5aac5ba805825da76410c181273ba90b1"
+        )
+        setup_python = (
+            "actions/setup-python@"
+            "5fda3b95a4ea91299a34e894583c3862153e4b97"
+        )
+
+        for name in ("vigilancia.yml", "prueba_telegram.yml"):
+            workflow = (
+                PROJECT_ROOT / ".github" / "workflows" / name
+            ).read_text(encoding="utf-8")
+            self.assertIn(checkout, workflow)
+            self.assertIn(setup_python, workflow)
+            self.assertNotIn("actions/checkout@v", workflow)
+            self.assertNotIn("actions/setup-python@v", workflow)
 
     def test_telegram_test_workflow_is_manual_only(self):
         workflow = (

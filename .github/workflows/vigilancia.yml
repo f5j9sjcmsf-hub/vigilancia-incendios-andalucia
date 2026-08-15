@@ -24,12 +24,17 @@ jobs:
 
     steps:
       - name: Descargar repositorio
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
+      - name: Cargar estado operativo
+        run: |
+          git fetch origin estado
+          git show origin/estado:data/state.json > data/state.json
+
       - name: Configurar Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -51,18 +56,22 @@ jobs:
           # el relevo a un segundo job independiente.
           for iteration in $(seq 1 6); do
             echo "Comprobación $iteration/6"
+            cp data/state.json "$RUNNER_TEMP/state-before.json"
             python src/main.py
 
-            if git diff --quiet -- data/state.json; then
+            if cmp --silent "$RUNNER_TEMP/state-before.json" data/state.json; then
               echo "No hay cambios en el estado que guardar."
             else
               cp data/state.json "$RUNNER_TEMP/state.json"
-              git checkout -- data/state.json
-              git pull --rebase origin main
+              git fetch origin estado
+              git switch --force-create estado origin/estado
               cp "$RUNNER_TEMP/state.json" data/state.json
               git add data/state.json
               git commit -m "Actualizar estado de vigilancia"
-              git push
+              git push origin HEAD:estado
+              git switch --force main
+              git pull --ff-only origin main
+              cp "$RUNNER_TEMP/state.json" data/state.json
             fi
 
             if [ "$iteration" -lt 6 ]; then
