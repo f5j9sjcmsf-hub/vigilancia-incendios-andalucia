@@ -4,8 +4,8 @@
     "infoca:name|iff niebla": {
       "fire": "IFF Niebla",
       "province": "Huelva, Sevilla",
-      "municipality": "Zalamea la Real, Paterna del Campo, Valverde del Camino, Nerva, Berrocal, El Madroño, El Castillo de las Guardas, Niebla",
-      "road": "HU-6106, HU-6104, HU-3106, HU-6108, A-493, HU-6107, HU-5104, HU-4103, HU-5103, VIASSE-538, SE-6400, SE-6402, SE-4401",
+      "municipality": "Valverde del Camino, Nerva, Paterna del Campo, Zalamea la Real, Berrocal, El Madroño, El Castillo de las Guardas, Niebla",
+      "road": "HU-6106, HU-6104, HU-6108, A-493, HU-6107, HU-5104, HU-4103, VIASSE-538, SE-6400, SE-6402, SE-4401",
       "road_details": [
         {
           "road": "HU-6106",
@@ -24,17 +24,6 @@
           "direction": "unspecifiedCarriageway",
           "datex_ids": [
             "26563620"
-          ],
-          "situation_ids": [
-            "22228123"
-          ]
-        },
-        {
-          "road": "HU-3106",
-          "section": "PK 11.4–20.8",
-          "direction": "unspecifiedCarriageway",
-          "datex_ids": [
-            "26451498"
           ],
           "situation_ids": [
             "22228123"
@@ -75,7 +64,7 @@
         },
         {
           "road": "HU-5104",
-          "section": "PK 0–15.5",
+          "section": "PK 4.5–15.5",
           "direction": "unspecifiedCarriageway",
           "datex_ids": [
             "26501800"
@@ -90,17 +79,6 @@
           "direction": "unspecifiedCarriageway",
           "datex_ids": [
             "26501799"
-          ],
-          "situation_ids": [
-            "22277450"
-          ]
-        },
-        {
-          "road": "HU-5103",
-          "section": "PK 0–1",
-          "direction": "unspecifiedCarriageway",
-          "datex_ids": [
-            "26604789"
           ],
           "situation_ids": [
             "22277450"
@@ -161,18 +139,16 @@
       "dgt": "Confirmado",
       "incident_id": "infoca:name|iff niebla",
       "datex_ids": [
-        "26563620",
-        "26572924",
-        "26451498",
         "26457006",
         "26563621",
+        "26572924",
+        "26563620",
         "26501799",
         "26508869",
-        "26604789",
         "26501800",
-        "26563498",
         "26563500",
         "26563499",
+        "26563498",
         "26712331"
       ],
       "situation_ids": [
@@ -183,11 +159,14 @@
       ],
       "status": "ACTIVO",
       "notified": true,
-      "reopened_roads": [],
+      "reopened_roads": [
+        "hu-3106",
+        "hu-5103"
+      ],
       "road_open": false
     }
   },
   "baseline_at": "2026-08-14T00:51:03.432344+02:00",
-  "last_run": "2026-08-15T06:29:37.044516+02:00",
+  "last_run": "2026-08-15T06:44:45.968883+02:00",
   "last_snapshot_at": "2026-08-14T07:18:04.648372+02:00"
 }
