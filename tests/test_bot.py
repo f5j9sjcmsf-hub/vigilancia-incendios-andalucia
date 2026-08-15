@@ -373,7 +373,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertIn("actions: write", workflow)
         self.assertIn("needs: vigilancia", workflow)
         self.assertIn(
-            "always() && needs.vigilancia.result != 'cancelled'",
+            "always() && !cancelled()",
             workflow,
         )
         self.assertIn("run: sleep 900", workflow)
