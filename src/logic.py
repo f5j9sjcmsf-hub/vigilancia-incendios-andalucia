@@ -131,7 +131,7 @@ def format_new_incident(item):
         f"<i>{_escape(item.get('fire') or 'Incendio forestal')}</i>",
         _format_location(item),
         "",
-        "<b>🔴 CARRETERAS CORTADAS</b>",
+        "<b>🔴CARRETERAS CORTADAS</b>",
         "",
     ]
 
@@ -157,7 +157,7 @@ def format_incident_update(item):
         f"<i>{_escape(item.get('fire') or 'Incendio forestal')}</i>",
         _format_location(item),
         "",
-        "<b>🔴 CARRETERAS CORTADAS</b>",
+        "<b>🔴CARRETERAS CORTADAS</b>",
         "",
     ]
 
@@ -181,7 +181,7 @@ def format_reopening(item):
 
     return "\n".join(
         [
-            "<b>🟢 CARRETERA REABIERTA</b>",
+            "<b>🔓 CARRETERA REABIERTA</b>",
             "",
             f"<i>{_escape(item.get('fire') or 'Incendio forestal')}</i>",
             _format_location(item),
@@ -466,7 +466,7 @@ def format_snapshot(detected, captured_at=None):
                 "",
                 f"<b>{index}. {_escape(item.get('fire') or 'Incendio forestal')}</b>",
                 _format_location(item),
-                "<b>🔴 CARRETERAS CORTADAS</b>",
+                "<b>🔴CARRETERAS CORTADAS</b>",
                 "",
             ]
         )
