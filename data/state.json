@@ -5,53 +5,8 @@
       "fire": "IFF Niebla",
       "province": "Sevilla",
       "municipality": "El Madroño, El Castillo de las Guardas, Niebla",
-      "road": "VIASSE-538, SE-6400, SE-4401, SE-5400",
-      "road_details": [
-        {
-          "road": "VIASSE-538",
-          "section": "PK 0–24.77",
-          "direction": "unspecifiedCarriageway",
-          "datex_ids": [
-            "26563500"
-          ],
-          "situation_ids": [
-            "22336933"
-          ]
-        },
-        {
-          "road": "SE-6400",
-          "section": "PK 0–4.5",
-          "direction": "unspecifiedCarriageway",
-          "datex_ids": [
-            "26563499"
-          ],
-          "situation_ids": [
-            "22336933"
-          ]
-        },
-        {
-          "road": "SE-4401",
-          "section": "PK 0–24.5",
-          "direction": "unspecifiedCarriageway",
-          "datex_ids": [
-            "26712331"
-          ],
-          "situation_ids": [
-            "22479268"
-          ]
-        },
-        {
-          "road": "SE-5400",
-          "section": "PK 0–4",
-          "direction": "unspecifiedCarriageway",
-          "datex_ids": [
-            "26790816"
-          ],
-          "situation_ids": [
-            "22336933"
-          ]
-        }
-      ],
+      "road": "",
+      "road_details": [],
       "section": "",
       "direction": "",
       "closure_type": "Total / no especificado",
@@ -73,7 +28,7 @@
         "22336933",
         "22479268"
       ],
-      "status": "ACTIVO",
+      "status": "REABIERTO",
       "notified": true,
       "reopened_roads": [
         "a-493",
@@ -85,12 +40,16 @@
         "hu-6106",
         "hu-6107",
         "hu-6108",
-        "se-6402"
+        "se-4401",
+        "se-5400",
+        "se-6400",
+        "se-6402",
+        "viasse-538"
       ],
-      "road_open": false
+      "road_open": true
     }
   },
   "baseline_at": "2026-08-14T00:51:03.432344+02:00",
-  "last_run": "2026-08-16T14:01:13.081851+02:00",
+  "last_run": "2026-08-16T14:16:15.750521+02:00",
   "last_snapshot_at": "2026-08-14T07:18:04.648372+02:00"
 }
