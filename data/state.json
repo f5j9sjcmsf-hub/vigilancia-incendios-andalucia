@@ -52,20 +52,8 @@
       "fire": "Incendio forestal",
       "province": "Huelva",
       "municipality": "Beas",
-      "road": "N-435",
-      "road_details": [
-        {
-          "road": "N-435",
-          "section": "PK 201–202",
-          "direction": "unspecifiedCarriageway",
-          "datex_ids": [
-            "27069330"
-          ],
-          "situation_ids": [
-            "22823571"
-          ]
-        }
-      ],
+      "road": "",
+      "road_details": [],
       "section": "",
       "direction": "",
       "closure_type": "Total / no especificado",
@@ -81,13 +69,15 @@
       "situation_ids": [
         "22823571"
       ],
-      "status": "ACTIVO",
+      "status": "REABIERTO",
       "notified": true,
-      "reopened_roads": [],
-      "road_open": false
+      "reopened_roads": [
+        "n-435"
+      ],
+      "road_open": true
     }
   },
   "baseline_at": "2026-08-14T00:51:03.432344+02:00",
-  "last_run": "2026-08-23T19:05:32.723490+02:00",
+  "last_run": "2026-08-23T19:20:35.787966+02:00",
   "last_snapshot_at": "2026-08-14T07:18:04.648372+02:00"
 }
