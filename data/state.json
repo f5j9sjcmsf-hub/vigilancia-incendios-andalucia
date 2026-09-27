@@ -79,20 +79,9 @@
     "dgt:24068586": {
       "fire": "Incendio forestal",
       "province": "Málaga",
-      "municipality": "Igualeja, Benahavís",
-      "road": "MA-7304, A-397",
+      "municipality": "Benahavís",
+      "road": "A-397",
       "road_details": [
-        {
-          "road": "MA-7304",
-          "section": "PK 0–7",
-          "direction": "unspecifiedCarriageway",
-          "datex_ids": [
-            "28380057"
-          ],
-          "situation_ids": [
-            "24068586"
-          ]
-        },
         {
           "road": "A-397",
           "section": "PK 12.1–38",
@@ -108,14 +97,13 @@
       "section": "",
       "direction": "",
       "closure_type": "Total / no especificado",
-      "detected_at": "27/09/2026 02:57",
+      "detected_at": "27/09/2026 10:31",
       "fire_status": "Corte confirmado",
       "infoca": "No identificado",
       "infoca_matched": false,
       "dgt": "Confirmado",
       "incident_id": "dgt:24068586",
       "datex_ids": [
-        "28380057",
         "28382974"
       ],
       "situation_ids": [
@@ -123,11 +111,13 @@
       ],
       "status": "ACTIVO",
       "notified": true,
-      "reopened_roads": [],
+      "reopened_roads": [
+        "ma-7304"
+      ],
       "road_open": false
     }
   },
   "baseline_at": "2026-08-14T00:51:03.432344+02:00",
-  "last_run": "2026-09-27T21:02:30.246565+02:00",
+  "last_run": "2026-09-27T21:18:04.479764+02:00",
   "last_snapshot_at": "2026-08-14T07:18:04.648372+02:00"
 }
