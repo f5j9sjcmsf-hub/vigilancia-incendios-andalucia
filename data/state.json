@@ -80,20 +80,8 @@
       "fire": "Incendio forestal",
       "province": "Málaga",
       "municipality": "Benahavís",
-      "road": "A-397",
-      "road_details": [
-        {
-          "road": "A-397",
-          "section": "PK 12.1–38",
-          "direction": "unspecifiedCarriageway",
-          "datex_ids": [
-            "28382974"
-          ],
-          "situation_ids": [
-            "24068586"
-          ]
-        }
-      ],
+      "road": "",
+      "road_details": [],
       "section": "",
       "direction": "",
       "closure_type": "Total / no especificado",
@@ -109,15 +97,16 @@
       "situation_ids": [
         "24068586"
       ],
-      "status": "ACTIVO",
+      "status": "REABIERTO",
       "notified": true,
       "reopened_roads": [
+        "a-397",
         "ma-7304"
       ],
-      "road_open": false
+      "road_open": true
     }
   },
   "baseline_at": "2026-08-14T00:51:03.432344+02:00",
-  "last_run": "2026-09-28T06:12:42.192787+02:00",
+  "last_run": "2026-09-28T06:27:45.324840+02:00",
   "last_snapshot_at": "2026-08-14T07:18:04.648372+02:00"
 }
