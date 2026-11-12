@@ -109,20 +109,8 @@
       "fire": "Incendio forestal",
       "province": "Sevilla",
       "municipality": "Castilleja del Campo",
-      "road": "A-472",
-      "road_details": [
-        {
-          "road": "A-472",
-          "section": "PK 12.5–14",
-          "direction": "unspecifiedCarriageway",
-          "datex_ids": [
-            "29975619"
-          ],
-          "situation_ids": [
-            "25560804"
-          ]
-        }
-      ],
+      "road": "",
+      "road_details": [],
       "section": "",
       "direction": "",
       "closure_type": "Total / no especificado",
@@ -138,13 +126,15 @@
       "situation_ids": [
         "25560804"
       ],
-      "status": "ACTIVO",
+      "status": "REABIERTO",
       "notified": true,
-      "reopened_roads": [],
-      "road_open": false
+      "reopened_roads": [
+        "a-472"
+      ],
+      "road_open": true
     }
   },
   "baseline_at": "2026-08-14T00:51:03.432344+02:00",
-  "last_run": "2026-11-12T20:12:43.481693+01:00",
+  "last_run": "2026-11-12T20:27:45.520245+01:00",
   "last_snapshot_at": "2026-08-14T07:18:04.648372+02:00"
 }
